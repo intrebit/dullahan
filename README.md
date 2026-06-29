@@ -18,6 +18,10 @@ New here? [`OVERVIEW.md`](OVERVIEW.md) is a tour of what it does; [`AGENTS.md`](
 
 ## Quick start
 
+> In a hurry? [`examples/QUICKSTART.md`](examples/QUICKSTART.md) is a copy-paste
+> walkthrough from `cargo install` to your first stats, including the blog and
+> contact endpoints.
+
 ### 1. Run the server
 
 ```bash
