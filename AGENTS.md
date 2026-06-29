@@ -3,7 +3,7 @@
 GDPR-compliant, cookie-free web analytics. A TypeScript browser client that POSTs
 events to a self-hostable Rust ingest + read API backed by Postgres.
 
-For a feature/architecture tour read [`OVERVIEW.md`](OVERVIEW.md). This file is
+For a feature/architecture tour read [`docs/overview.md`](docs/overview.md). This file is
 how to **work on** the repo.
 
 ## Layout
@@ -117,4 +117,4 @@ and intentionally not built**. Don't fake cross-day identity.
 ## Status
 
 The metrics roadmap is complete (read-only stats, realtime, engagement, sessions,
-funnels — all merged). See [`OVERVIEW.md`](OVERVIEW.md) for the full catalog.
+funnels — all merged). See [`docs/overview.md`](docs/overview.md) for the full catalog.

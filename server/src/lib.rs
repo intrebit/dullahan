@@ -7,7 +7,7 @@
 //!
 //! For install, configuration, the full `/stats/*` reference, and the privacy
 //! model, see the [README](https://github.com/intrebit/dullahan#readme) and
-//! [`OVERVIEW.md`](https://github.com/intrebit/dullahan/blob/master/OVERVIEW.md).
+//! [`OVERVIEW.md`](https://github.com/intrebit/dullahan/blob/master/docs/overview.md).
 //!
 //! # Embedding
 //!

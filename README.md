@@ -52,7 +52,7 @@ No cookies, no fingerprinting, **no raw IP storage — ever.** With sessions **o
 
 | Doc | What |
 |---|---|
-| [`OVERVIEW.md`](OVERVIEW.md) | Architecture + feature tour |
+| [`docs/overview.md`](docs/overview.md) | Architecture + feature tour |
 | [`examples/QUICKSTART.md`](examples/QUICKSTART.md) | End-to-end walkthrough (install → first stats) |
 | [`docs/api.md`](docs/api.md) | Full HTTP API reference — `/stats/*`, blog, what's collected |
 | [`docs/deploy.md`](docs/deploy.md) | Configuration, self-host hardening, metrics, load testing |
@@ -60,7 +60,7 @@ No cookies, no fingerprinting, **no raw IP storage — ever.** With sessions **o
 
 ## Security
 
-Found a vulnerability? Please report it privately — see [`SECURITY.md`](SECURITY.md). Do not open a public issue.
+Found a vulnerability? Please report it privately — see [`docs/SECURITY.md`](docs/SECURITY.md). Do not open a public issue.
 
 ## License
 

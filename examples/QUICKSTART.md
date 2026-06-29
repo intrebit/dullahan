@@ -146,4 +146,4 @@ curl -X POST "$BASE/contact" \
 
 One Rust binary + a Postgres replaces a tracking SaaS, a headless CMS, and a
 contact-form service — cookie-free, no raw IPs stored, fully self-hosted. For the
-architecture and the privacy model, read [`../OVERVIEW.md`](../OVERVIEW.md).
+architecture and the privacy model, read [`../docs/overview.md`](../docs/overview.md).

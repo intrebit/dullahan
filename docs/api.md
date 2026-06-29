@@ -4,7 +4,7 @@ dullahan exposes three HTTP surfaces: the **stats read API** (`/stats/*`,
 camelCase JSON, admin-gated), the **blog/content API** (`/posts`, snake_case
 JSON), and ingest (`/collect`, written by the tracker — see the
 [README](../README.md)). For an architecture tour see
-[`../OVERVIEW.md`](../OVERVIEW.md); for a copy-paste walkthrough see
+[`overview.md`](overview.md); for a copy-paste walkthrough see
 [`../examples/QUICKSTART.md`](../examples/QUICKSTART.md).
 
 ## Stats (`/stats/*`)

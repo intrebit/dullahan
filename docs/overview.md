@@ -4,8 +4,8 @@ A privacy-first, cookie-free web analytics product in two halves: a tiny browser
 SDK that collects events, and a self-hostable Rust server that ingests them and
 serves an admin-only read API. No cookies, no fingerprinting, no raw IP storage.
 
-This is a state-of-the-app tour. For install/usage see [`README.md`](README.md);
-for how to work on the code see [`AGENTS.md`](AGENTS.md).
+This is a state-of-the-app tour. For install/usage see [`README.md`](../README.md);
+for how to work on the code see [`AGENTS.md`](../AGENTS.md).
 
 ## Shape
 
