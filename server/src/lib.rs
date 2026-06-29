@@ -1,3 +1,18 @@
+//! dullahan — a self-hosted, cookie-free backend for small sites.
+//!
+//! This crate ships the `dullahan` **binary**: a single Rust server providing
+//! privacy-first analytics, a headless blog/content API, and a contact endpoint,
+//! backed by Postgres. It is meant to be run (`cargo install dullahan`), not
+//! consumed as a library dependency — the public modules below exist so the
+//! integration tests can drive the app and are **not a stable API**.
+//!
+//! For install, configuration, the full `/stats/*` reference, and the privacy
+//! model, see the [README](https://github.com/intrebit/dullahan#readme) and
+//! [`OVERVIEW.md`](https://github.com/intrebit/dullahan/blob/master/OVERVIEW.md).
+//!
+//! The app is assembled by [`router`] (or [`router_with_metrics`]), which returns
+//! a configured [`axum::Router`] from an [`state::AppState`].
+
 pub mod blog;
 pub mod channels;
 pub mod config;

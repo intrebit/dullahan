@@ -1,3 +1,5 @@
+//! Environment-driven configuration: env vars parsed into a typed `Config`.
+
 use std::env;
 use std::time::Duration;
 

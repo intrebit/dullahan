@@ -1,3 +1,5 @@
+//! `POST /contact` — validates a form submission and emails it (via Resend).
+
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;

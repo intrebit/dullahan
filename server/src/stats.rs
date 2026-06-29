@@ -1,3 +1,5 @@
+//! The admin-gated `/stats/*` read API (summary, top, timeseries, vitals, …).
+
 use crate::state::AppState;
 use crate::types::{Funnel, FunnelStep, MAX_PATH, SummaryChange, SummaryResponse, TopDimension};
 use axum::Json;

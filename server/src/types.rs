@@ -1,3 +1,5 @@
+//! Shared request/response payloads and database row types.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

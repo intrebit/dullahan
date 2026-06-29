@@ -1,3 +1,5 @@
+//! Transactional email sending via the Resend API.
+
 use crate::config::EmailConfig;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;

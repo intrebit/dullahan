@@ -1,3 +1,5 @@
+//! `/collect` ingest — validate the event, then fire-and-forget the DB insert.
+
 use crate::state::AppState;
 use crate::types::RawPayload;
 use axum::Json;

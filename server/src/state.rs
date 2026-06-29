@@ -1,3 +1,5 @@
+//! Shared application state (`AppState`): config, DB pool, and the salt store.
+
 use crate::config::Config;
 use crate::email::Mailer;
 use crate::salt::SaltCache;

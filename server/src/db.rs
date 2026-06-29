@@ -1,3 +1,5 @@
+//! Postgres access: the connection pool, migrations, and event insert/query helpers.
+
 use crate::types::{
     Engagement, EngagementRow, HeatmapCell, MetricBucket, RawPayload, Realtime, ScrollFunnel,
     Sessions, Summary, TimeseriesPoint, TopDimension, TopRow, Vitals, VitalsDistribution,
