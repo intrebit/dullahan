@@ -85,8 +85,7 @@ Design conventions that run through all of it:
 - **Embed:** add the server-served `/pt.js` script tag; the tracker is vendored
   into the Rust binary and is not published as a separate npm package.
 - **Self-host:** `deploy/` has a one-shot `install.sh`, a systemd unit, a
-  `Caddyfile`, dashboard-credential generation, and an env example. Operator
-  hardening checklist is in the README.
+  `Caddyfile`, and an env example. Operator hardening checklist is in the README.
 - **Ops:** per-IP rate limiting built in; Prometheus `/metrics`; security headers
   (CSP/HSTS/etc.) on by default.
 

@@ -13,7 +13,7 @@ how to **work on** the repo.
 | `tracker/` | Browser SDK (TypeScript, built with tsup, tested with vitest). npm package `dullahan`. |
 | `server/` | Ingest + read API (Rust + Axum + sqlx + Postgres). Crate `dullahan`. |
 | `server/migrations/` | sqlx SQL migrations, applied automatically on server startup. |
-| `deploy/` | Self-host: `install.sh`, systemd unit, `Caddyfile`, env example, dashboard-cred gen. |
+| `deploy/` | Self-host: `install.sh`, systemd unit, `Caddyfile`, env example. |
 | `scripts/` | `loadtest.sh` (oha wrapper). |
 | `.github/workflows/ci.yml` | CI: lint (fmt+clippy), server (build+test+boot), tracker (vitest+build), cargo audit. |
 
