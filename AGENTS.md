@@ -1,4 +1,4 @@
-# dullahan — contributor guide
+# dullahan — developer guide
 
 GDPR-compliant, cookie-free web analytics. A TypeScript browser client that POSTs
 events to a self-hostable Rust ingest + read API backed by Postgres.

@@ -7,7 +7,7 @@
 
 **The headless backend for your site.** A self-hosted, cookie-free Rust binary that gives a small site three things over plain HTTP: privacy-first **analytics**, a headless **blog/content API**, and a **contact** endpoint. It serves its own browser tracker at `/pt.js` — no separate package to install.
 
-New here? [`OVERVIEW.md`](OVERVIEW.md) is a tour of what it does; [`AGENTS.md`](AGENTS.md) is the contributor guide.
+New here? [`OVERVIEW.md`](OVERVIEW.md) is a tour of what it does; [`AGENTS.md`](AGENTS.md) is the developer guide (build/test/lint, conventions, gotchas) for contributors and coding agents.
 
 ## One binary
 
