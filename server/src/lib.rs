@@ -3,28 +3,58 @@
 //! This crate ships the `dullahan` **binary**: a single Rust server providing
 //! privacy-first analytics, a headless blog/content API, and a contact endpoint,
 //! backed by Postgres. It is meant to be run (`cargo install dullahan`), not
-//! consumed as a library dependency — the public modules below exist so the
-//! integration tests can drive the app and are **not a stable API**.
+//! consumed as a library dependency.
 //!
 //! For install, configuration, the full `/stats/*` reference, and the privacy
 //! model, see the [README](https://github.com/intrebit/dullahan#readme) and
 //! [`OVERVIEW.md`](https://github.com/intrebit/dullahan/blob/master/OVERVIEW.md).
 //!
-//! The app is assembled by [`router`] (or [`router_with_metrics`]), which returns
-//! a configured [`axum::Router`] from an [`state::AppState`].
+//! # Embedding
+//!
+//! The whole app is one [`axum::Router`], built by [`router`] (or
+//! [`router_with_metrics`]) from a [`Config`]-derived [`AppState`]:
+//!
+//! ```no_run
+//! # async fn run(state: dullahan::AppState) {
+//! let app = dullahan::router(state);
+//! // serve `app` with axum / hyper as usual
+//! # }
+//! ```
+//!
+//! Everything else (ingest, stats, blog, contact handlers, the DB layer, …) is
+//! internal plumbing — `pub` only so the integration tests can reach it, hidden
+//! here, and **not a stable API**.
 
+// Internal modules: public for the integration tests, hidden from the docs.
+#[doc(hidden)]
 pub mod blog;
+#[doc(hidden)]
 pub mod channels;
+#[doc(hidden)]
 pub mod config;
+#[doc(hidden)]
 pub mod contact;
+#[doc(hidden)]
 pub mod db;
+#[doc(hidden)]
 pub mod email;
+#[doc(hidden)]
 pub mod ingest;
+#[doc(hidden)]
 pub mod salt;
+#[doc(hidden)]
 pub mod state;
+#[doc(hidden)]
 pub mod stats;
+#[doc(hidden)]
 pub mod types;
+#[doc(hidden)]
 pub mod ua;
+
+/// Runtime configuration, built from environment variables. See [`Config::from_env`].
+pub use config::Config;
+/// Shared application state passed to [`router`] — holds the DB pool, config, and salt cache.
+pub use state::AppState;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
@@ -34,7 +64,6 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum_prometheus::PrometheusMetricLayer;
 use sha2::{Digest, Sha256};
-use state::AppState;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_governor::key_extractor::SmartIpKeyExtractor;
