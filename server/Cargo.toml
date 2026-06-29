@@ -1,0 +1,43 @@
+[package]
+name = "dullahan"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "A self-hosted, cookie-free backend for small sites: privacy-first analytics, a headless blog/content API, and a contact endpoint — one Rust binary that serves its own tracker."
+repository = "https://github.com/intrebit/dullahan"
+homepage = "https://github.com/intrebit/dullahan"
+readme = "README.md"
+keywords = ["analytics", "privacy", "headless", "self-hosted", "backend"]
+categories = ["web-programming::http-server"]
+
+[[bin]]
+name = "dullahan"
+path = "src/main.rs"
+
+[lib]
+name = "dullahan"
+path = "src/lib.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["json", "tokio"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "set-header", "timeout", "request-id", "util"] }
+tower_governor = "0.4"
+axum-prometheus = "0.7"
+metrics = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "macros", "chrono", "json", "migrate"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "1"
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.8"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.4", features = ["util"] }

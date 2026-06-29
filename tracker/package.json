@@ -1,0 +1,21 @@
+{
+  "name": "@dullahan/tracker",
+  "version": "0.2.0",
+  "description": "Browser tracking client for the Dullahan backend. Built to a single IIFE the server vendors at server/assets/pt.js and serves at /pt.js. Not published — a build tool, not a package.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4",
+    "happy-dom": "^20.9.0"
+  }
+}

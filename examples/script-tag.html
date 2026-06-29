@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dullahan — script-tag example</title>
+
+    <!--
+      The whole integration: one line. No npm install, no build step.
+      Point src at your dullahan server; data-site identifies the site.
+      data-endpoint is optional (defaults to /collect on the script's origin).
+
+      Optional opt-ins:
+        data-track-scroll      emit scroll-depth events (25/50/75/100%)
+        data-track-outbound    emit outbound/download click events
+        data-respect-dnt       send nothing when DNT/GPC is on
+        data-auto-track="false" disable automatic pageviews
+    -->
+    <script
+      defer
+      src="http://localhost:3001/pt.js"
+      data-site="example"
+      data-track-scroll
+    ></script>
+  </head>
+  <body>
+    <h1>dullahan script-tag example</h1>
+    <p>This page auto-tracks a pageview on load. Click below to fire a custom event.</p>
+
+    <button id="signup">Sign up</button>
+
+    <script>
+      // Inline custom events use the global the script tag exposes.
+      document.getElementById('signup').addEventListener('click', () => {
+        window.dullahan?.track('signup', { plan: 'pro' })
+      })
+    </script>
+  </body>
+</html>

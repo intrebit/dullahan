@@ -1,0 +1,9 @@
+[advisories]
+ignore = [
+    # Marvin attack on `rsa` reaches us only through `sqlx-mysql`, which is
+    # excluded at compile time — we use `sqlx` with `default-features = false`
+    # and only the `postgres` driver. `cargo audit` reads Cargo.lock directly
+    # and so still flags the unused crate. No fixed upstream version exists
+    # at the time of writing; revisit when `rsa >= 0.10` is published.
+    "RUSTSEC-2023-0071",
+]

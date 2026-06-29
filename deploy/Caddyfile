@@ -1,0 +1,13 @@
+{
+    email ${ACME_EMAIL}
+}
+
+${DOMAIN} {
+    encode gzip zstd
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Referrer-Policy "no-referrer"
+        X-Content-Type-Options "nosniff"
+    }
+    reverse_proxy 127.0.0.1:3011
+}

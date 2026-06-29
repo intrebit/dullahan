@@ -1,0 +1,23 @@
+node_modules
+dist
+target
+.DS_Store
+.env
+.env.*
+!.env.example
+*.log
+.idea
+.vscode
+.wrangler
+.astro
+
+# session worklog (local, not part of the repo)
+WORKLOG.md
+
+# operator-local one-shot scripts (not part of the published deploy bundle)
+deploy/fix.sh
+deploy/fix-port.sh
+deploy/fix-pg-port.sh
+deploy/fix_email_from_name.sh
+deploy/redeploy.sh
+deploy/reset-pg-password.sh

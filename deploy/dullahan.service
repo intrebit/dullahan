@@ -1,0 +1,26 @@
+[Unit]
+Description=dullahan analytics server
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=dullahan
+Group=dullahan
+WorkingDirectory=/opt/dullahan
+EnvironmentFile=/opt/dullahan/dullahan.env
+ExecStart=/opt/dullahan/dullahan
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/dullahan
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

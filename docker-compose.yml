@@ -1,0 +1,33 @@
+# Try Dullahan in two minutes:
+#   ADMIN_TOKEN=$(openssl rand -hex 24) docker compose up --build
+# Then: curl localhost:3001/health  ·  open localhost:3001/pt.js
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: dullahan
+      POSTGRES_PASSWORD: dullahan
+      POSTGRES_DB: dullahan
+    volumes:
+      - dullahan-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dullahan"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  server:
+    build: ./server
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://dullahan:dullahan@db:5432/dullahan
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-changeme-dev-token}
+      BIND_ADDR: 0.0.0.0:3001
+      RUST_LOG: info,sqlx=warn
+    ports:
+      - "3001:3001"
+
+volumes:
+  dullahan-pg:

@@ -1,0 +1,12 @@
+{
+  "name": "dullahan-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "End-to-end test: real browser -> server-hosted /pt.js -> /collect -> /stats",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}
