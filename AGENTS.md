@@ -70,19 +70,25 @@ ms, clamped to a sane window on ingest); server receive time is `received_at`.
 
 ## Migrations & indexes (lessons)
 
+- `0001_init.sql` is the whole schema, squashed from the original seven
+  migrations. Never edit it: sqlx stores each applied migration's checksum and
+  refuses to start when one changes ("previously applied but has been modified").
+  Schema changes are new files — `0002_*.sql` onward.
 - sqlx runs each migration in a transaction on startup. A migration starting with
-  `-- no-transaction` runs outside one — needed for `CREATE INDEX CONCURRENTLY`
-  (see `0006`). On a fresh DB an interrupted CONCURRENTLY build leaves an invalid
-  index; drop and re-run.
+  `-- no-transaction` runs outside one, which is what `CREATE INDEX CONCURRENTLY`
+  needs. The squashed init builds its indexes on an empty table, so it wants
+  neither; reach for CONCURRENTLY only when indexing a table that already has
+  live traffic, and know that an interrupted build leaves an *invalid* index that
+  `IF NOT EXISTS` silently skips (drop it, then re-run).
 - **Index decisions were settled with `EXPLAIN ANALYZE`, not intuition** — repeat
   that before adding any index:
-  - `0006` `(site_id, received_at)` — needed for `/stats/realtime` (filters server
+  - `(site_id, received_at)` — needed for `/stats/realtime` (filters server
     receive time; every other index is on client `ts`).
   - **No `(site_id, view_id)` index** — engagement groups by `view_id` over a
     `(site_id, ts)`-bounded scan; the view_id index is ignored on selective ranges
     and loses to a parallel seq-scan on wide ones, while costing random-UUID writes
     on the hot `/collect` path.
-  - **No new index for sessions/funnels** — `0005`'s `(site_id, visitor_hash, ts)`
+  - **No new index for sessions/funnels** — `(site_id, visitor_hash, ts)`
     already serves the sessionization window.
 
 ## Gotchas

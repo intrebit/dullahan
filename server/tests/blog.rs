@@ -300,7 +300,10 @@ async fn create_applies_defaults(pool: PgPool) {
         json!({"slug":"min","title":"Min","body_markdown":"x"}),
     )
     .await;
-    assert_eq!(created["author"], "Andrej Focic");
+    assert_eq!(
+        created["author"], "",
+        "no server-side default author — the caller supplies one"
+    );
     assert_eq!(created["description"], "");
     assert_eq!(created["draft"], false);
     assert!(created["image"].is_null());

@@ -219,7 +219,7 @@ pub async fn create(
 
     let post = sqlx::query_as::<_, PostDetail>(&format!(
         "INSERT INTO blog_posts (slug, title, description, author, image, body_markdown, draft, pub_date)
-         VALUES ($1, $2, COALESCE($3::text, ''), COALESCE($4::text, 'Andrej Focic'), $5::text, $6,
+         VALUES ($1, $2, COALESCE($3::text, ''), COALESCE($4::text, ''), $5::text, $6,
                  COALESCE($7::boolean, false), COALESCE($8::timestamptz, now()))
          RETURNING {DETAIL_COLS}"
     ))

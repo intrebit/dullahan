@@ -26,7 +26,7 @@ Server env vars:
 | `LOG_FORMAT` | no | `text` (set `json` for structured logs) |
 | `RUST_LOG` | no | `info,sqlx=warn` |
 
-> **Upgrading an existing large table:** the `realtime` index ships as `CREATE INDEX CONCURRENTLY` so the build does not block `/collect` writes. If a build is interrupted Postgres leaves an *invalid* index that the migration then skips — drop it (`DROP INDEX analytics_events_site_received_idx;`) and restart to rebuild.
+> **Schema:** `0001_init.sql` creates everything and is applied on first start. Migrations are checksummed, so an applied one must never be edited — the server refuses to start if it changes.
 
 ## Operator hardening (self-host checklist)
 
