@@ -203,6 +203,10 @@ jobs:
     concurrency:
       group: deploy-production
       cancel-in-progress: false
+    # Job-level, because a step `if:` cannot read the secrets context — only
+    # env/vars/github. The optional public health check below tests env.
+    env:
+      HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -256,7 +260,5 @@ jobs:
       # the DEPLOY_HEALTH_URL secret to your public /health — skipped if unset,
       # since the SSH host is usually not the public hostname.
       - name: Verify the public endpoint
-        if: ${{ secrets.DEPLOY_HEALTH_URL != '' }}
-        env:
-          HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+        if: env.HEALTH_URL != ''
         run: curl -fsS --retry 5 --retry-delay 2 "$HEALTH_URL"
