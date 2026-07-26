@@ -55,13 +55,20 @@ axum_http_requests_total{method="GET",path="/health",status="200"} 1
 
 ## Load testing
 
-A small wrapper around [`oha`](https://github.com/hatoo/oha) lives at [`../scripts/loadtest.sh`](../scripts/loadtest.sh):
+With [`oha`](https://github.com/hatoo/oha) (`brew install oha`), against a server
+on `127.0.0.1:3001`. Note `X-Forwarded-For` only keys the rate limiter when the
+server runs with `TRUST_PROXY_HEADERS=1`:
 
 ```bash
-brew install oha
-BASE=http://127.0.0.1:3001 ./scripts/loadtest.sh collect-burst    # single-IP abuse
-BASE=http://127.0.0.1:3001 ./scripts/loadtest.sh collect-spread   # parallel IPs
-BASE=http://127.0.0.1:3001 ./scripts/loadtest.sh stats-read       # read path
+# ingest under sustained load from one client — expect 429s once the burst is spent
+oha -z 30s -c 50 -m POST -H 'Content-Type: application/json' \
+  -H 'X-Forwarded-For: 10.0.0.1' \
+  -d '{"t":"pageview","s":"loadtest","p":"/","ts":1700000000000,"d":"desktop"}' \
+  http://127.0.0.1:3001/collect
+
+# read path
+oha -z 30s -c 50 -H "Authorization: Bearer $ADMIN_TOKEN" \
+  'http://127.0.0.1:3001/stats/summary?site=loadtest&days=30'
 ```
 
 Reference numbers from a release build on an M-class laptop, single Postgres on the same box:

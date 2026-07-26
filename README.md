@@ -42,7 +42,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 > **Set `ADMIN_TOKEN` on any public deploy.** Without it, `/stats/*` and blog reads are open to anyone (blog writes are refused). The server logs a warning when it's unset.
 
-The full copy-paste walkthrough — tracker opt-ins, custom events, blog, contact — is in **[`examples/QUICKSTART.md`](examples/QUICKSTART.md)**.
+Tracker opt-ins and custom events are in [`tracker/README.md`](tracker/README.md); every endpoint — stats, blog, contact — is in [`docs/api.md`](docs/api.md).
 
 ## Privacy
 
@@ -53,7 +53,7 @@ No cookies, no fingerprinting, **no raw IP storage — ever.** The server proces
 | Doc | What |
 |---|---|
 | [`docs/overview.md`](docs/overview.md) | Architecture + feature tour |
-| [`examples/QUICKSTART.md`](examples/QUICKSTART.md) | End-to-end walkthrough (install → first stats) |
+| [`tracker/README.md`](tracker/README.md) | Browser SDK — script-tag attributes, opt-ins, custom events |
 | [`docs/api.md`](docs/api.md) | Full HTTP API reference — `/stats/*`, blog, what's collected |
 | [`docs/deploy.md`](docs/deploy.md) | Configuration, self-host hardening, metrics, load testing |
 | [`AGENTS.md`](AGENTS.md) | Developer guide (build/test/lint, conventions, gotchas) |

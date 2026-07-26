@@ -14,8 +14,9 @@ how to **work on** the repo.
 | `server/` | Ingest + read API (Rust + Axum + sqlx + Postgres). Crate `dullahan`. |
 | `server/migrations/` | sqlx SQL migrations, applied automatically on server startup. |
 | `deploy/` | Self-host: `install.sh`, systemd unit, `Caddyfile`, env example. |
-| `scripts/` | `loadtest.sh` (oha wrapper). |
-| `.github/workflows/ci.yml` | CI: lint (fmt+clippy), server (build+test+boot), tracker (vitest+build), cargo audit. |
+| `e2e/` | Playwright: a real browser drives the tracker against a live server. Its own npm project, run by CI. |
+| `docs/` | `api.md` (HTTP reference), `deploy.md` (config + hardening), `overview.md`, `SECURITY.md`. |
+| `.github/workflows/ci.yml` | CI: lint (fmt+clippy), server (build+test+boot), tracker (vitest+build), cargo audit, e2e (playwright), docker (build+smoke). |
 
 ## Build / test / lint
 
@@ -37,7 +38,9 @@ npm run build        # tsup
 npx tsc --noEmit     # tsup/esbuild does NOT typecheck — run tsc to catch type errors CI would
 ```
 
-CI (`.github/workflows/ci.yml`) runs exactly these four gates; keep them green.
+CI runs these plus `e2e` (Playwright, from `e2e/`: `npm ci && npx playwright test`
+against a server it builds) and `docker` (image build + `/health`, `/pt.js`
+smoke). Six gates; keep them green.
 
 ## The data model (get this right)
 
