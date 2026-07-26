@@ -41,9 +41,13 @@ pub mod contact;
 #[doc(hidden)]
 pub mod db;
 #[doc(hidden)]
+pub mod digest;
+#[doc(hidden)]
 pub mod email;
 #[doc(hidden)]
 pub mod ingest;
+#[doc(hidden)]
+pub mod products;
 #[doc(hidden)]
 pub mod salt;
 #[doc(hidden)]
@@ -213,12 +217,26 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/posts/:key/view", post(blog::view));
 
+    // Product catalog. Same auth model as the blog (public reads, admin writes
+    // checked per-handler). `:key` is a slug on GET and an id on PATCH/DELETE —
+    // one capture name because axum/matchit reject differing names on a path.
+    let product_routes = Router::new()
+        .route("/products", get(products::list).post(products::create))
+        .route(
+            "/products/:key",
+            get(products::get_product)
+                .patch(products::update)
+                .delete(products::delete_product),
+        )
+        .route("/products/:key/view", post(products::view));
+
     let mut app = Router::new()
         .merge(public_routes)
         .route("/health", get(health))
         .route("/pt.js", get(serve_script))
         .merge(stats_routes)
         .merge(blog_routes)
+        .merge(product_routes)
         .with_state(state.clone());
 
     // Security response headers (defense in depth — most are also useful when

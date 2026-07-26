@@ -22,6 +22,7 @@ fn state(pool: PgPool, admin_token: Option<&str>) -> AppState {
             behind_tls: false,
             trust_proxy_headers: false,
             sessions_enabled: false,
+            shop_currency: "EUR".into(),
         }),
         pool,
         mailer: None,

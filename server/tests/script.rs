@@ -20,6 +20,7 @@ fn test_state(pool: PgPool) -> AppState {
             behind_tls: false,
             trust_proxy_headers: false,
             sessions_enabled: false,
+            shop_currency: "EUR".into(),
         }),
         pool,
         mailer: None,

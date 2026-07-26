@@ -44,6 +44,11 @@ pub struct Config {
     /// (raw IP never stored) and coarse browser/OS family. Default false:
     /// outside transient rate-limiter keying, no IP/UA analytics are derived.
     pub sessions_enabled: bool,
+    /// ISO-4217 currency for the product catalog (`/products`). Prices are
+    /// stored as integer minor units (`price_cents`) with no per-product
+    /// currency; this is the single shop-wide code echoed in each response so
+    /// the frontend can format. Default `EUR`. See `SHOP_CURRENCY`.
+    pub shop_currency: String,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +123,12 @@ impl Config {
             .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
 
+        let shop_currency = env::var("SHOP_CURRENCY")
+            .ok()
+            .map(|s| s.trim().to_ascii_uppercase())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "EUR".into());
+
         Ok(Self {
             bind_addr,
             database_url,
@@ -130,6 +141,7 @@ impl Config {
             behind_tls,
             trust_proxy_headers,
             sessions_enabled,
+            shop_currency,
         })
     }
 
@@ -193,6 +205,7 @@ mod tests {
             behind_tls: false,
             trust_proxy_headers: false,
             sessions_enabled: false,
+            shop_currency: "EUR".into(),
         }
     }
 
