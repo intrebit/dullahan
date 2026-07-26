@@ -3,8 +3,8 @@
 GDPR-compliant, cookie-free web analytics. A TypeScript browser client that POSTs
 events to a self-hostable Rust ingest + read API backed by Postgres.
 
-For a feature/architecture tour read [`docs/overview.md`](docs/overview.md). This file is
-how to **work on** the repo.
+For what it does and how to run it read [`README.md`](README.md); for the HTTP
+surface read [`docs/api.md`](docs/api.md). This file is how to **work on** the repo.
 
 ## Layout
 
@@ -15,7 +15,7 @@ how to **work on** the repo.
 | `server/migrations/` | sqlx SQL migrations, applied automatically on server startup. |
 | `deploy/` | Self-host: `install.sh`, systemd unit, `Caddyfile`, env example. |
 | `e2e/` | Playwright: a real browser drives the tracker against a live server. Its own npm project, run by CI. |
-| `docs/` | `api.md` (HTTP reference), `deploy.md` (config + hardening), `overview.md`, `SECURITY.md`. |
+| `docs/` | `api.md` (HTTP reference), `deploy.md` (config + hardening), `SECURITY.md` (policy). |
 | `.github/workflows/ci.yml` | CI: lint (fmt+clippy), server (build+test+boot), tracker (vitest+build), cargo audit, e2e (playwright), docker (build+smoke). |
 
 ## Build / test / lint
@@ -121,4 +121,4 @@ intentionally not built**. Don't fake cross-day identity.
 ## Status
 
 The metrics roadmap is complete (read-only stats, realtime, engagement, sessions,
-funnels — all merged). See [`docs/overview.md`](docs/overview.md) for the full catalog.
+funnels — all merged). See [`docs/api.md`](docs/api.md) for the full catalog.

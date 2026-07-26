@@ -17,6 +17,17 @@ One Rust binary + a Postgres replaces a tracking SaaS, a headless CMS, and a con
 - **Contact** — `/contact` takes a form POST and emails it (via Resend), with a per-site recipient so one server can host several sites' forms.
 - **Privacy by design** — no cookies, no fingerprinting, **no raw IP storage, ever**.
 
+```
+ Browser (your site)                      Your server (self-hosted)
+ ┌─────────────────────┐   POST /collect  ┌───────────────────────────┐
+ │  dullahan tracker   │ ───────────────▶ │  Axum ingest (fire-and-   │   ┌──────────┐
+ │  (~3 KB gz, TS)     │   202 Accepted   │  forget write)            │──▶│ Postgres │
+ └─────────────────────┘                  │                           │   │ analytics│
+                                          │  /stats/* read API        │◀──│ _events  │
+ Dashboard / curl ───── Bearer token ───▶ │  (admin-gated, CORS)      │   └──────────┘
+                                          └───────────────────────────┘
+```
+
 ## Quick start
 
 ```bash
@@ -52,7 +63,6 @@ No cookies, no fingerprinting, **no raw IP storage — ever.** The server proces
 
 | Doc | What |
 |---|---|
-| [`docs/overview.md`](docs/overview.md) | Architecture + feature tour |
 | [`tracker/README.md`](tracker/README.md) | Browser SDK — script-tag attributes, opt-ins, custom events |
 | [`docs/api.md`](docs/api.md) | Full HTTP API reference — `/stats/*`, blog, what's collected |
 | [`docs/deploy.md`](docs/deploy.md) | Configuration, self-host hardening, metrics, load testing |
