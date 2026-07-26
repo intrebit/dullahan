@@ -94,6 +94,31 @@ Two things to know:
   add required reviewers to it in repo settings and every deploy waits for a
   click.
 
+## Weekly digest email
+
+`dullahan --digest` computes a plain-English, week-over-week summary (pageviews,
+unique visitors, bounce, avg time on page, top pages/referrers) for each site in
+`ALLOWED_SITES` and emails it to that site's `CONTACT_TO_<SITE>` recipient. It
+reuses the existing Resend config (`RESEND_API_KEY` / `EMAIL_FROM`); sites with
+no recipient are skipped. Preview without sending:
+
+```bash
+/opt/dullahan/dullahan --digest --dry-run   # prints each email to stdout
+```
+
+Run it weekly with the bundled units:
+
+```bash
+sudo cp deploy/dullahan-digest.service deploy/dullahan-digest.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now dullahan-digest.timer
+systemctl list-timers dullahan-digest.timer   # confirm the next run
+```
+
+The timer defaults to **Sunday 18:00 Europe/Dublin** — edit `OnCalendar` in
+`dullahan-digest.timer` to change it (the timezone suffix needs systemd v240+;
+drop it for server-local time on older systemd).
+
 ## Metrics
 
 `GET /metrics` exposes Prometheus-format metrics for HTTP traffic (request rate, latency histograms, status codes per route). Scrape it with Prometheus / Grafana Agent / Vector.
