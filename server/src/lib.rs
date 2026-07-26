@@ -122,6 +122,31 @@ pub fn router(state: AppState) -> Router {
             .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
     };
 
+    // Public-read CORS for the product catalog so a storefront on another origin
+    // can fetch `/products` from the browser and ping `/products/:slug/view`.
+    // Mirrors `cors_stats` (allowlist from `product_origins`, or `Any` when unset
+    // or containing "*"), but is GET+POST only: PATCH/DELETE are deliberately
+    // absent so a browser can't preflight the admin writes, and only CONTENT_TYPE
+    // is allowed (not AUTHORIZATION), so cross-origin admin calls fail — the
+    // handlers stay admin-gated regardless. Published catalog data is public;
+    // drafts require admin and are not exposed by these reads.
+    let cors_products = match state.config.product_origins.as_ref() {
+        Some(origins) if !origins.is_empty() && !origins.iter().any(|o| o == "*") => {
+            let parsed: Vec<HeaderValue> = origins
+                .iter()
+                .filter_map(|o| HeaderValue::from_str(o).ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(parsed)
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_headers([header::CONTENT_TYPE])
+        }
+        _ => CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+            .allow_headers([header::CONTENT_TYPE]),
+    };
+
     let stats_routes = Router::new()
         .route("/stats/summary", get(stats::summary))
         .route("/stats/timeseries", get(stats::timeseries))
@@ -228,7 +253,8 @@ pub fn router(state: AppState) -> Router {
                 .patch(products::update)
                 .delete(products::delete_product),
         )
-        .route("/products/:key/view", post(products::view));
+        .route("/products/:key/view", post(products::view))
+        .layer(cors_products);
 
     let mut app = Router::new()
         .merge(public_routes)

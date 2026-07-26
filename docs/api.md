@@ -67,6 +67,7 @@ DELETE /products/:id                                  # delete (admin) -> 204
 - **Fields.** `{ slug, title, description?, image?, price_cents?, available?, position?, draft? }` (`views` is read-only, server-managed). `price_cents` is an **integer count of minor units** (e.g. `1299` = €12.99 when `SHOP_CURRENCY=EUR`) — there is no per-product currency and no floating-point money. `slug` must match `^[a-z0-9-]+$`; a duplicate slug returns `409`. A negative `price_cents` returns `400`.
 - **Listing.** Ordered by `position` ascending, then newest first. `available=false` (sold out) items are **still listed** — it's a display flag for the frontend, not a filter. `draft=true` items are hidden from the public list and 404 on `GET /products/:slug` unless admin-authed.
 - **Auth.** Create / update / delete require a configured `ADMIN_TOKEN` (same bearer as `/stats/*`); reads follow stats open-mode (open when no token is set). **`PATCH /products/:id`** accepts any subset of the create fields and sets `updated_date`.
+- **CORS.** `GET /products` and the `POST /products/:slug/view` ping send CORS headers so a storefront on another origin can read the catalog from the browser. Open to any origin by default (the published catalog is public); set `PRODUCT_ORIGINS` to restrict. Only `GET`/`POST` are exposed — the admin mutating verbs aren't reachable cross-origin from a browser.
 
 ## Contact form (`POST /contact`)
 
