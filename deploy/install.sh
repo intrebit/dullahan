@@ -113,6 +113,9 @@ install -m 644 "$REPO_DIR/deploy/dullahan.service" /etc/systemd/system/dullahan.
 systemctl daemon-reload
 systemctl enable --now dullahan
 
+echo "==> deploy helper (used by CD; harmless if you only deploy by hand)"
+install -m 755 -o root -g root "$REPO_DIR/deploy/dullahan-deploy.sh" /usr/local/bin/dullahan-deploy
+
 echo "==> caddyfile"
 mkdir -p /etc/caddy
 DOMAIN="$DOMAIN" ACME_EMAIL="$ACME_EMAIL" envsubst < "$REPO_DIR/deploy/Caddyfile" > /etc/caddy/Caddyfile.tmp
@@ -125,7 +128,7 @@ echo "  dullahan is up at https://${DOMAIN}"
 echo "=========================================="
 echo "  health:    curl https://${DOMAIN}/health"
 echo "  logs:      journalctl -u dullahan -f"
-echo "  redeploy:  re-run install.sh (rebuilds binary)"
+echo "  redeploy:  re-run install.sh (rebuilds binary), or set up CD — docs/deploy.md"
 echo "=========================================="
 if [[ "${ADMIN_TOKEN_GENERATED:-0}" == "1" ]]; then
     echo

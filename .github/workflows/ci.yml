@@ -180,3 +180,83 @@ jobs:
           curl -fsS http://127.0.0.1:3001/pt.js | grep -q 'dullahan' && echo "pt.js OK"
           docker logs dullahan
           docker rm -f dullahan
+
+  # Push to master, all six gates green -> build a release binary here and install
+  # it on the server. The binary is the only artifact: sqlx::migrate! embeds the
+  # migrations, so nothing else needs to travel.
+  #
+  # Requires four repo secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
+  # DEPLOY_KNOWN_HOSTS (and optionally DEPLOY_PORT). Without them the job fails
+  # fast on the guard below instead of hanging on an SSH prompt. One-time server
+  # setup is in docs/deploy.md.
+  deploy:
+    name: deploy (master -> server)
+    needs: [lint, server, tracker, audit, e2e, docker]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    # Pinned, not ubuntu-latest: the binary must run against the server's glibc,
+    # so build on an image no newer than it. 22.04 ships glibc 2.35, old enough
+    # for Debian 12 (2.36) and Ubuntu 22.04+. Bump only alongside the server.
+    runs-on: ubuntu-22.04
+    # Add required reviewers to this environment in repo settings if you ever
+    # want a push to master to wait for a click before it reaches production.
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - name: Check deploy secrets are configured
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER_: ${{ secrets.DEPLOY_USER }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          missing=()
+          [[ -n "$HOST" ]]        || missing+=(DEPLOY_HOST)
+          [[ -n "$USER_" ]]       || missing+=(DEPLOY_USER)
+          [[ -n "$KEY" ]]         || missing+=(DEPLOY_SSH_KEY)
+          [[ -n "$KNOWN_HOSTS" ]] || missing+=(DEPLOY_KNOWN_HOSTS)
+          if ((${#missing[@]})); then
+            echo "missing repo secrets: ${missing[*]} — see docs/deploy.md" >&2
+            exit 1
+          fi
+      - name: Build release binary
+        working-directory: server
+        run: |
+          cargo build --release --locked --bin dullahan
+          strip target/release/dullahan
+          ls -lh target/release/dullahan
+      - name: Install on the server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER_: ${{ secrets.DEPLOY_USER }}
+          PORT: ${{ secrets.DEPLOY_PORT }}
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          # Through env rather than ${{ }} interpolation: a key containing shell
+          # metacharacters would otherwise be pasted into the script body.
+          printf '%s\n' "$KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          # Pinned host key, so a hijacked DNS record cannot collect the key.
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          SSH_OPTS=(-i ~/.ssh/id_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -p "${PORT:-22}")
+          scp "${SSH_OPTS[@]}" server/target/release/dullahan "$USER_@$HOST:/tmp/dullahan.new"
+          # Installs, restarts, health-checks, and rolls back on failure; a red
+          # step here means the previous version is still serving.
+          ssh "${SSH_OPTS[@]}" "$USER_@$HOST" "sudo /usr/local/bin/dullahan-deploy /tmp/dullahan.new"
+      # dullahan-deploy already health-checked the service on the box; this only
+      # confirms the public route (DNS, CDN, Caddy, TLS) still reaches it. Set
+      # the DEPLOY_HEALTH_URL secret to your public /health — skipped if unset,
+      # since the SSH host is usually not the public hostname.
+      - name: Verify the public endpoint
+        if: ${{ secrets.DEPLOY_HEALTH_URL != '' }}
+        env:
+          HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
+        run: curl -fsS --retry 5 --retry-delay 2 "$HEALTH_URL"

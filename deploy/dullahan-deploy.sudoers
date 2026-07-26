@@ -1,0 +1,9 @@
+# Install as /etc/sudoers.d/dullahan-deploy (mode 0440, root:root) so the CD
+# account can install a new binary and restart the service, and nothing else:
+#
+#   install -m 0440 -o root -g root dullahan-deploy.sudoers /etc/sudoers.d/dullahan-deploy
+#   visudo -c    # verify before logging out
+#
+# The wildcard is the uploaded binary's path. It is not a security boundary —
+# dullahan-deploy validates its argument — it only keeps the rule readable.
+deploy ALL=(root) NOPASSWD: /usr/local/bin/dullahan-deploy /tmp/*

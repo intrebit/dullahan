@@ -40,6 +40,60 @@ The defaults are safe for a private deploy. For a public-internet host:
 - **Strip the `x-country` header at the proxy** before re-injecting it from a GeoIP lookup — the server trusts whatever the client sends if no proxy strips it.
 - **Watch your access logs.** The `/collect` body never stores IPs, but IPs are processed transiently for rate limiting, and your reverse proxy / request traces likely log them. Configure log retention / redaction to match your privacy posture.
 
+## Continuous deployment
+
+A `deploy` job in [`ci.yml`](../.github/workflows/ci.yml) runs after all six CI
+gates pass on a push to `master`. It builds a release binary on the runner and
+installs it over SSH — the binary is the only artifact, because
+`sqlx::migrate!` compiles the migrations into it.
+
+On the server, `/usr/local/bin/dullahan-deploy`
+([source](../deploy/dullahan-deploy.sh), installed by `install.sh`) keeps the
+running binary as `dullahan.prev`, installs the new one, restarts, and polls
+`/health` for 45s. **If the new build does not come up, it restores the previous
+binary and fails the job** — a red deploy means the old version is still serving.
+
+One-time setup. On the server:
+
+```bash
+# 1. an account for CI, with no rights beyond the deploy helper
+adduser --disabled-password --gecos "" deploy
+install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
+
+# 2. its own key pair — generate on your machine, upload only the public half
+#    ssh-keygen -t ed25519 -f ~/.ssh/dullahan-deploy -C "github-actions"
+install -m 600 -o deploy -g deploy /dev/stdin /home/deploy/.ssh/authorized_keys <<< "ssh-ed25519 AAAA... github-actions"
+
+# 3. exactly one sudo right
+install -m 0440 -o root -g root deploy/dullahan-deploy.sudoers /etc/sudoers.d/dullahan-deploy
+visudo -c
+
+# 4. confirm the helper is present (install.sh puts it there)
+test -x /usr/local/bin/dullahan-deploy && echo ok
+```
+
+Then add these repo secrets (Settings → Secrets and variables → Actions). The job
+fails fast with the missing names if any are absent:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_HOST` | hostname or IP the runner can SSH to (the origin, not a proxied CDN name) |
+| `DEPLOY_USER` | `deploy` |
+| `DEPLOY_SSH_KEY` | the **private** key from step 2 |
+| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -p 22 <host>` — pins the host key so a hijacked DNS record can't harvest the deploy key |
+| `DEPLOY_PORT` | optional, defaults to 22 |
+| `DEPLOY_HEALTH_URL` | optional public `/health` URL; when set, the job verifies the public route after deploying |
+
+Two things to know:
+
+- **The runner's glibc must not be newer than the server's.** The job pins
+  `ubuntu-22.04` (glibc 2.35), which runs on Debian 12 (2.36) and Ubuntu 22.04+.
+  On an older server, build in a matching container instead — the symptom is
+  `version 'GLIBC_2.xx' not found` in `journalctl -u dullahan`.
+- **Want a human in the loop?** The job targets the `production` environment;
+  add required reviewers to it in repo settings and every deploy waits for a
+  click.
+
 ## Metrics
 
 `GET /metrics` exposes Prometheus-format metrics for HTTP traffic (request rate, latency histograms, status codes per route). Scrape it with Prometheus / Grafana Agent / Vector.
