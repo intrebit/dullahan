@@ -514,18 +514,16 @@ async fn sessions_disabled_stores_no_visitor_data(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     wait_for_count(&pool, 1).await;
-    let (vh, br, os): (Option<String>, Option<String>, Option<String>) =
-        sqlx::query_as("SELECT visitor_hash, browser, os FROM analytics_events LIMIT 1")
+    let vh: Option<String> =
+        sqlx::query_scalar("SELECT visitor_hash FROM analytics_events LIMIT 1")
             .fetch_one(&pool)
             .await
             .unwrap();
     assert_eq!(vh, None);
-    assert_eq!(br, None);
-    assert_eq!(os, None);
 }
 
 #[sqlx::test]
-async fn sessions_enabled_records_visitor_hash_and_ua(pool: PgPool) {
+async fn sessions_enabled_records_visitor_hash(pool: PgPool) {
     let app = router(state_with(pool.clone(), None, None, true));
     let resp = app
         .oneshot(post_collect_ua(
@@ -537,14 +535,12 @@ async fn sessions_enabled_records_visitor_hash_and_ua(pool: PgPool) {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     wait_for_count(&pool, 1).await;
-    let (vh, br, os): (Option<String>, Option<String>, Option<String>) =
-        sqlx::query_as("SELECT visitor_hash, browser, os FROM analytics_events LIMIT 1")
+    let vh: Option<String> =
+        sqlx::query_scalar("SELECT visitor_hash FROM analytics_events LIMIT 1")
             .fetch_one(&pool)
             .await
             .unwrap();
     assert_eq!(vh.as_ref().map(|s| s.len()), Some(18));
-    assert_eq!(br.as_deref(), Some("Chrome"));
-    assert_eq!(os.as_deref(), Some("Windows"));
 }
 
 #[sqlx::test]
@@ -666,33 +662,6 @@ async fn summary_omits_session_metrics_when_disabled(pool: PgPool) {
     let body = body_json(resp).await;
     assert!(body.get("uniqueVisitors").is_none(), "got {body}");
     assert!(body.get("bounceRate").is_none(), "got {body}");
-}
-
-#[sqlx::test]
-async fn top_breaks_down_by_browser_when_enabled(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    app.clone()
-        .oneshot(post_collect_ua(
-            json!({"t": "pageview", "s": "s", "p": "/", "ts": now_ms}),
-            "1.1.1.1",
-            CHROME_WIN,
-        ))
-        .await
-        .unwrap();
-    wait_for_count(&pool, 1).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/top?site=s&days=365&dim=browser")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    assert_eq!(body[0]["key"], "Chrome");
-    assert_eq!(body[0]["count"], 1);
 }
 
 #[sqlx::test]
@@ -900,74 +869,6 @@ async fn collect_clamps_absurd_future_ts(pool: PgPool) {
 // ---- Tier 1 metrics ----
 
 #[sqlx::test]
-async fn vitals_breakdown_by_path_has_per_metric_counts(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
-    let now = chrono::Utc::now().timestamp_millis();
-    // Two perf rows on /a: both carry lcp+cls, only one carries inp.
-    for pf in [
-        json!({"lcp": 2000.0, "cls": 0.05, "inp": 150.0, "ttfb": 300.0}),
-        json!({"lcp": 3000.0, "cls": 0.20, "ttfb": 500.0}),
-    ] {
-        let r = app
-            .clone()
-            .oneshot(post_collect(
-                json!({"t":"performance","s":"site-1","p":"/a","ts":now,"pf":pf}),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(r.status(), StatusCode::ACCEPTED);
-    }
-    wait_for_count(&pool, 2).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/vitals?site=site-1&days=365&dim=path&limit=10")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let row = &body[0];
-    assert_eq!(row["key"], "/a");
-    assert_eq!(row["samples"], 2);
-    assert_eq!(row["lcpN"], 2);
-    assert_eq!(row["inpN"], 1, "only one row had inp; got {body}");
-    assert!(row["lcpP75"].as_f64().unwrap() >= 2000.0);
-}
-
-#[sqlx::test]
-async fn vitals_distribution_buckets_pass_rate(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
-    let now = chrono::Utc::now().timestamp_millis();
-    for pf in [json!({"lcp": 2000.0}), json!({"lcp": 5000.0})] {
-        app.clone()
-            .oneshot(post_collect(
-                json!({"t":"performance","s":"s","p":"/","ts":now,"pf":pf}),
-            ))
-            .await
-            .unwrap();
-    }
-    wait_for_count(&pool, 2).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/vitals?site=s&days=365")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    let lcp = &body["distribution"]["lcp"];
-    assert_eq!(lcp["good"], 1, "one lcp <= 2500; got {body}");
-    assert_eq!(lcp["poor"], 1, "one lcp > 4000");
-    assert_eq!(lcp["total"], 2);
-    assert_eq!(lcp["needsImprovement"], 0);
-}
-
-#[sqlx::test]
 async fn summary_reports_time_on_page_percentiles(pool: PgPool) {
     let app = router(test_state(pool.clone(), None, None));
     let now = chrono::Utc::now().timestamp_millis();
@@ -1086,46 +987,6 @@ async fn timeseries_day_buckets_are_utc_stable(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn heatmap_buckets_and_rejects_bad_tz(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
-    let now = chrono::Utc::now().timestamp_millis();
-    app.clone()
-        .oneshot(post_collect(
-            json!({"t":"pageview","s":"s","p":"/","ts":now}),
-        ))
-        .await
-        .unwrap();
-    wait_for_count(&pool, 1).await;
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::get("/stats/heatmap?site=s&days=365&tz=UTC")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body.as_array().unwrap().len(), 1);
-    let wd = body[0]["weekday"].as_i64().unwrap();
-    assert!((1..=7).contains(&wd), "isodow 1-7; got {body}");
-    assert_eq!(body[0]["pageviews"], 1);
-
-    // Well-formed but non-existent tz -> Postgres rejects -> 400.
-    let resp = app
-        .oneshot(
-            Request::get("/stats/heatmap?site=s&days=365&tz=Not/AZone")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
-
-#[sqlx::test]
 async fn channels_classifies_pageviews(pool: PgPool) {
     let app = router(test_state(pool.clone(), None, None));
     let now = chrono::Utc::now().timestamp_millis();
@@ -1168,35 +1029,6 @@ async fn channels_classifies_pageviews(pool: PgPool) {
     assert_eq!(map.get("Organic Search"), Some(&1), "got {body}");
     assert_eq!(map.get("Direct"), Some(&1));
     assert_eq!(map.get("Paid"), Some(&1));
-}
-
-#[sqlx::test]
-async fn top_breaks_down_by_viewport(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
-    let now = chrono::Utc::now().timestamp_millis();
-    for v in [1280, 1280, 390] {
-        app.clone()
-            .oneshot(post_collect(
-                json!({"t":"pageview","s":"s","p":"/","ts":now,"v":v}),
-            ))
-            .await
-            .unwrap();
-    }
-    wait_for_count(&pool, 3).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/top?site=s&days=365&dim=viewport")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    // Numeric column must come back as a text key, not the "(none)" fallback.
-    assert_eq!(body[0]["key"], "1280", "got {body}");
-    assert_eq!(body[0]["count"], 2);
 }
 
 #[sqlx::test]
@@ -1321,432 +1153,9 @@ async fn realtime_excludes_rows_outside_window(pool: PgPool) {
     );
 }
 
-#[sqlx::test]
-async fn engagement_reports_rates(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
-    let now = chrono::Utc::now().timestamp_millis();
-    // Visit v1 on /a: scrolled 75, an outbound click, 15s dwell -> engaged.
-    for ev in [
-        json!({"t":"pageview","s":"s","p":"/a","ts":now,"vid":"v1"}),
-        json!({"t":"event","s":"s","p":"/a","ts":now,"n":"scroll_depth","pr":{"pct":75},"vid":"v1"}),
-        json!({"t":"event","s":"s","p":"/a","ts":now,"n":"outbound","pr":{"href":"example.com"},"vid":"v1"}),
-        json!({"t":"pageleave","s":"s","p":"/a","ts":now,"dur":15000,"vid":"v1"}),
-        // Visit v2 on /a: pageview only -> not engaged.
-        json!({"t":"pageview","s":"s","p":"/a","ts":now,"vid":"v2"}),
-    ] {
-        app.clone().oneshot(post_collect(ev)).await.unwrap();
-    }
-    wait_for_count(&pool, 5).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/engagement?site=s&days=365")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["visits"], 2, "got {body}");
-    assert_eq!(body["engagedVisitRate"], 0.5, "got {body}");
-    assert_eq!(body["scrollReach75"], 0.5);
-    assert_eq!(body["outboundRate"], 0.5);
-    // scroll_depth + outbound are auto-instrumentation -> excluded from events/visit.
-    assert_eq!(body["avgEventsPerVisit"], 0.0, "got {body}");
-    assert_eq!(body["scrollFunnel"]["25"], 0.5);
-    assert_eq!(body["scrollFunnel"]["75"], 0.5);
-    assert_eq!(body["scrollFunnel"]["100"], 0.0);
-}
-
-#[sqlx::test]
-async fn engagement_omits_untracked_scroll_and_outbound(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
-    let now = chrono::Utc::now().timestamp_millis();
-    // Plain visit: pageview + a 20s dwell, no scroll/outbound rows at all.
-    app.clone()
-        .oneshot(post_collect(
-            json!({"t":"pageview","s":"s","p":"/a","ts":now,"vid":"v1"}),
-        ))
-        .await
-        .unwrap();
-    app.clone()
-        .oneshot(post_collect(
-            json!({"t":"pageleave","s":"s","p":"/a","ts":now,"dur":20000,"vid":"v1"}),
-        ))
-        .await
-        .unwrap();
-    wait_for_count(&pool, 2).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/engagement?site=s&days=365")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    assert_eq!(body["visits"], 1, "got {body}");
-    assert_eq!(
-        body["engagedVisitRate"], 1.0,
-        "engaged via 20s dwell; got {body}"
-    );
-    assert!(
-        body.get("scrollReach75").is_none(),
-        "scroll not tracked => omitted; got {body}"
-    );
-    assert!(
-        body.get("outboundRate").is_none(),
-        "outbound not tracked => omitted; got {body}"
-    );
-    assert!(body.get("scrollFunnel").is_none(), "got {body}");
-}
-
-#[sqlx::test]
-async fn engagement_by_path_gates_scroll_site_wide(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
-    let now = chrono::Utc::now().timestamp_millis();
-    // /a: an engaged visit that scrolled to 100%.
-    app.clone()
-        .oneshot(post_collect(
-            json!({"t":"pageview","s":"s","p":"/a","ts":now,"vid":"a1"}),
-        ))
-        .await
-        .unwrap();
-    app.clone()
-        .oneshot(post_collect(
-            json!({"t":"event","s":"s","p":"/a","ts":now,"n":"scroll_depth","pr":{"pct":100},"vid":"a1"}),
-        ))
-        .await
-        .unwrap();
-    // /b: a pageview-only visit (no scroll), but the site DOES track scroll.
-    app.clone()
-        .oneshot(post_collect(
-            json!({"t":"pageview","s":"s","p":"/b","ts":now,"vid":"b1"}),
-        ))
-        .await
-        .unwrap();
-    wait_for_count(&pool, 3).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/engagement?site=s&days=365&dim=path")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body.as_array().unwrap().len(), 2, "got {body}");
-    // Tie on visits (1 each) -> key asc -> /a then /b.
-    assert_eq!(body[0]["key"], "/a");
-    assert_eq!(body[0]["engagedVisitRate"], 1.0);
-    assert_eq!(
-        body[0]["scrollReach75"], 1.0,
-        "reached 100 >= 75; got {body}"
-    );
-    assert_eq!(body[1]["key"], "/b");
-    assert_eq!(body[1]["engagedVisitRate"], 0.0);
-    // /b had no scroll, but the site tracks scroll -> 0.0, NOT omitted.
-    assert_eq!(body[1]["scrollReach75"], 0.0, "got {body}");
-    // No outbound anywhere on the site -> omitted on every row.
-    assert!(body[0].get("outboundRate").is_none(), "got {body}");
-}
-
-#[sqlx::test]
-async fn engagement_events_per_visit_excludes_auto_instrumentation(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
-    let now = chrono::Utc::now().timestamp_millis();
-    // One visit: a custom `track` event plus auto scroll + outbound rows.
-    for ev in [
-        json!({"t":"pageview","s":"s","p":"/a","ts":now,"vid":"v1"}),
-        json!({"t":"event","s":"s","p":"/a","ts":now,"n":"signup","vid":"v1"}),
-        json!({"t":"event","s":"s","p":"/a","ts":now,"n":"scroll_depth","pr":{"pct":50},"vid":"v1"}),
-        json!({"t":"event","s":"s","p":"/a","ts":now,"n":"outbound","pr":{"href":"x.com"},"vid":"v1"}),
-    ] {
-        app.clone().oneshot(post_collect(ev)).await.unwrap();
-    }
-    wait_for_count(&pool, 4).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/engagement?site=s&days=365")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    assert_eq!(body["visits"], 1, "got {body}");
-    // Only "signup" counts; scroll_depth + outbound are excluded.
-    assert_eq!(body["avgEventsPerVisit"], 1.0, "got {body}");
-}
-
 // ---- Tier 3 metrics (sessions) ----
 
-#[sqlx::test]
-async fn sessions_basic_counts_and_bounce(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
-    let now = chrono::Utc::now().timestamp_millis();
-    // Visitor A (one IP): 3 pageviews close in time -> one 3-page session.
-    for p in ["/a", "/b", "/c"] {
-        app.clone()
-            .oneshot(post_collect_ua(
-                json!({"t":"pageview","s":"s","p":p,"ts":now}),
-                "1.1.1.1",
-                CHROME_WIN,
-            ))
-            .await
-            .unwrap();
-    }
-    // Visitor B (different IP): a single pageview -> a bounce.
-    app.clone()
-        .oneshot(post_collect_ua(
-            json!({"t":"pageview","s":"s","p":"/a","ts":now}),
-            "2.2.2.2",
-            CHROME_WIN,
-        ))
-        .await
-        .unwrap();
-    wait_for_count(&pool, 4).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/sessions?site=s&days=365")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["sessions"], 2, "got {body}");
-    assert_eq!(body["avgPagesPerSession"], 2.0, "(3 + 1) / 2; got {body}");
-    assert_eq!(
-        body["bounceRate"], 0.5,
-        "one of two sessions is single-page; got {body}"
-    );
-}
-
-#[sqlx::test]
-async fn sessions_split_on_30min_gap(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
-    let now = chrono::Utc::now().timestamp_millis();
-    let forty_min = 40 * 60 * 1000;
-    // Same visitor (hash uses today's salt regardless of ts), two pageviews 40
-    // min apart -> the gap exceeds 30 min -> two sessions.
-    for ts in [now - forty_min, now] {
-        app.clone()
-            .oneshot(post_collect_ua(
-                json!({"t":"pageview","s":"s","p":"/a","ts":ts}),
-                "1.1.1.1",
-                CHROME_WIN,
-            ))
-            .await
-            .unwrap();
-    }
-    wait_for_count(&pool, 2).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/sessions?site=s&days=365")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    assert_eq!(
-        body["sessions"], 2,
-        "40min gap splits the visit; got {body}"
-    );
-    assert_eq!(
-        body["bounceRate"], 1.0,
-        "both sessions are single-page; got {body}"
-    );
-}
-
-#[sqlx::test]
-async fn sessions_report_entry_and_exit_pages(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
-    let now = chrono::Utc::now().timestamp_millis();
-    let min = 60 * 1000;
-    // One visitor, three pages in order inside the gap window.
-    for (p, ts) in [("/", now - 2 * min), ("/b", now - min), ("/c", now)] {
-        app.clone()
-            .oneshot(post_collect_ua(
-                json!({"t":"pageview","s":"s","p":p,"ts":ts}),
-                "1.1.1.1",
-                CHROME_WIN,
-            ))
-            .await
-            .unwrap();
-    }
-    wait_for_count(&pool, 3).await;
-
-    let entry = body_json(
-        app.clone()
-            .oneshot(
-                Request::get("/stats/sessions?site=s&days=365&dim=entry")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(entry[0]["key"], "/", "entry is the first page; got {entry}");
-
-    let exit = body_json(
-        app.oneshot(
-            Request::get("/stats/sessions?site=s&days=365&dim=exit")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap(),
-    )
-    .await;
-    assert_eq!(exit[0]["key"], "/c", "exit is the last page; got {exit}");
-}
-
-#[sqlx::test]
-async fn sessions_omitted_when_disabled(pool: PgPool) {
-    // Sessions off (default): no visitor_hash is derived, so no sessions exist.
-    let app = router(test_state(pool.clone(), None, None));
-    app.clone()
-        .oneshot(post_collect(json!({
-            "t":"pageview","s":"s","p":"/","ts":chrono::Utc::now().timestamp_millis()
-        })))
-        .await
-        .unwrap();
-    wait_for_count(&pool, 1).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/sessions?site=s&days=365")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    assert_eq!(body["sessions"], 0, "got {body}");
-    assert!(body.get("avgPagesPerSession").is_none(), "got {body}");
-    assert!(body.get("bounceRate").is_none(), "got {body}");
-}
-
 // ---- Tier 3b metrics (funnels) ----
-
-#[sqlx::test]
-async fn funnel_counts_ordered_conversions(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
-    let now = chrono::Utc::now().timestamp_millis();
-    let min = 60 * 1000;
-    // 4 visitors (distinct IPs) enter /a; 2 continue to /b; 1 reaches /c.
-    for (p, t) in [("/a", now - 2 * min), ("/b", now - min), ("/c", now)] {
-        app.clone()
-            .oneshot(post_collect_ua(
-                json!({"t":"pageview","s":"s","p":p,"ts":t}),
-                "1.1.1.1",
-                CHROME_WIN,
-            ))
-            .await
-            .unwrap();
-    }
-    for (p, t) in [("/a", now - min), ("/b", now)] {
-        app.clone()
-            .oneshot(post_collect_ua(
-                json!({"t":"pageview","s":"s","p":p,"ts":t}),
-                "2.2.2.2",
-                CHROME_WIN,
-            ))
-            .await
-            .unwrap();
-    }
-    for ip in ["3.3.3.3", "4.4.4.4"] {
-        app.clone()
-            .oneshot(post_collect_ua(
-                json!({"t":"pageview","s":"s","p":"/a","ts":now}),
-                ip,
-                CHROME_WIN,
-            ))
-            .await
-            .unwrap();
-    }
-    wait_for_count(&pool, 7).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/funnel?site=s&days=365&steps=/a,/b,/c")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["steps"].as_array().unwrap().len(), 3, "got {body}");
-    assert_eq!(body["steps"][0]["key"], "/a");
-    assert_eq!(body["steps"][0]["sessions"], 4, "got {body}");
-    assert_eq!(body["steps"][1]["sessions"], 2);
-    assert_eq!(body["steps"][2]["sessions"], 1);
-    assert_eq!(body["steps"][1]["conversionFromStart"], 0.5);
-    assert_eq!(body["steps"][2]["conversionFromStart"], 0.25);
-    assert_eq!(body["steps"][1]["conversionFromPrev"], 0.5);
-    assert_eq!(body["steps"][2]["conversionFromPrev"], 0.5);
-}
-
-#[sqlx::test]
-async fn funnel_respects_step_order(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
-    let now = chrono::Utc::now().timestamp_millis();
-    let min = 60 * 1000;
-    // One visitor visits /b BEFORE /a. For funnel /a -> /b, only step 1 (/a) is
-    // reached; the earlier /b does not count toward step 2.
-    for (p, t) in [("/b", now - min), ("/a", now)] {
-        app.clone()
-            .oneshot(post_collect_ua(
-                json!({"t":"pageview","s":"s","p":p,"ts":t}),
-                "1.1.1.1",
-                CHROME_WIN,
-            ))
-            .await
-            .unwrap();
-    }
-    wait_for_count(&pool, 2).await;
-
-    let resp = app
-        .oneshot(
-            Request::get("/stats/funnel?site=s&days=365&steps=/a,/b")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
-    assert_eq!(body["steps"][0]["sessions"], 1, "reached /a; got {body}");
-    assert_eq!(
-        body["steps"][1]["sessions"], 0,
-        "/b came before /a, so step 2 is not reached; got {body}"
-    );
-}
-
-#[sqlx::test]
-async fn funnel_rejects_too_few_steps(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
-    let resp = app
-        .oneshot(
-            Request::get("/stats/funnel?site=s&days=365&steps=/a")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
 
 #[sqlx::test]
 async fn collect_coerces_unknown_device_to_null(pool: PgPool) {
@@ -1831,22 +1240,6 @@ async fn collect_rejects_too_many_event_props(pool: PgPool) {
             "n": "click",
             "pr": Value::Object(props)
         })))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
-
-#[sqlx::test]
-async fn funnel_rejects_duplicate_steps(pool: PgPool) {
-    // /a,/b,/a — array_position() collapses the repeat to step 1, so the third
-    // step is unreachable; reject rather than report a false 0% conversion.
-    let app = router(test_state(pool, None, None));
-    let resp = app
-        .oneshot(
-            Request::get("/stats/funnel?site=s&days=365&steps=/a,/b,/a")
-                .body(Body::empty())
-                .unwrap(),
-        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

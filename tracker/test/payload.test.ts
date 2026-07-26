@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
-  buildPageViewPayload,
-  buildEventPayload,
-  buildPerformancePayload,
-} from '../src/payload'
+import { buildPageViewPayload, buildEventPayload } from '../src/payload'
 
 describe('buildPageViewPayload', () => {
   it('returns pageview payload with correct type', () => {
@@ -11,7 +7,6 @@ describe('buildPageViewPayload', () => {
     expect(payload.t).toBe('pageview')
     expect(typeof payload.p).toBe('string')
     expect(typeof payload.ts).toBe('number')
-    expect(typeof payload.v).toBe('number')
   })
 
   it('accepts custom path', () => {
@@ -22,15 +17,6 @@ describe('buildPageViewPayload', () => {
   it('strips query params from custom path', () => {
     const payload = buildPageViewPayload('/custom?secret=token')
     expect(payload.p).toBe('/custom')
-  })
-
-  it('rounds viewport width', () => {
-    Object.defineProperty(window, 'innerWidth', {
-      value: 1443,
-      configurable: true,
-    })
-    const payload = buildPageViewPayload()
-    expect(payload.v).toBe(1440)
   })
 
   it('attaches utm campaign from the landing query string', () => {
@@ -72,28 +58,5 @@ describe('buildEventPayload', () => {
     expect(payload.ts).toBeGreaterThanOrEqual(before)
     expect(payload.ts).toBeLessThanOrEqual(after)
     expect(typeof payload.p).toBe('string')
-  })
-})
-
-describe('buildPerformancePayload', () => {
-  it('returns performance payload with metrics', () => {
-    const payload = buildPerformancePayload({
-      lcp: 1200,
-      fcp: 800,
-      cls: 0.05,
-      ttfb: 300,
-    })
-    expect(payload.t).toBe('performance')
-    expect(payload.pf).toEqual({
-      lcp: 1200,
-      fcp: 800,
-      cls: 0.05,
-      ttfb: 300,
-    })
-  })
-
-  it('handles partial metrics', () => {
-    const payload = buildPerformancePayload({ ttfb: 250 })
-    expect(payload.pf).toEqual({ ttfb: 250 })
   })
 })

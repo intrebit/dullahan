@@ -15,31 +15,21 @@ server has `ADMIN_TOKEN` set.
 GET /stats/summary?site=my-site&days=30
 GET /stats/timeseries?site=my-site&days=30&bucket=day
 GET /stats/top?site=my-site&dim=path&limit=10
-GET /stats/events?site=my-site&name=scroll_depth&by=pct
-GET /stats/vitals?site=my-site&days=30
-GET /stats/heatmap?site=my-site&days=30&tz=Europe/Dublin
+GET /stats/events?site=my-site&name=signup&by=plan
 GET /stats/channels?site=my-site&days=30
 GET /stats/realtime?site=my-site&minutes=5
-GET /stats/engagement?site=my-site&days=30
-GET /stats/sessions?site=my-site&days=30&gap=30
-GET /stats/funnel?site=my-site&days=30&steps=/,/pricing,/signup
 ```
 
 `top?dim=path` returns `avgDurMs` and `medianDurMs` per path. `summary` returns `avgTimeOnPageMs`, `medianTimeOnPageMs`, and `p75TimeOnPageMs`. With sessions enabled (see below), `summary` also returns `uniqueVisitors` and `bounceRate`.
 
 - **`summary?compare=prev`** adds `previous` (same metrics for the immediately preceding equal-length window) and `change` (percentage deltas; `null` when the previous value is 0).
 - **`timeseries`** includes a per-bucket `uniqueVisitors` when sessions are on — plot this instead of the range-wide total (see the note below).
-- **`vitals`** (site-wide) includes a `distribution` of Core-Web-Vitals pass-rate buckets (`good` / `needsImprovement` / `poor` / `total`) per metric against Google's thresholds. **`vitals?dim=path&limit=N`** instead returns an array of per-path p75s, each with its own per-metric sample count (`lcpN`, `inpN`, … — INP is sparse, so it is reported separately to flag low-confidence p75s).
-- **`heatmap`** returns pageview counts per ISO weekday (1–7) × hour (0–23). `tz` is an optional IANA timezone for the hour bucketing (default `UTC`); an unknown timezone returns 400.
 - **`channels`** groups pageviews into marketing channels (Direct / Organic Search / Social / Paid / Campaign / Referral) from the referrer host + UTM tags. The brand lists are heuristic.
 - **`realtime`** returns `active` — distinct page-visits with any event in the last `minutes` (default 5, clamped 1–60) — plus the top active `pages`. It counts on the server's receive time (not the client clock) and needs no opt-in. Cookie-free, so "active" means page-visits in progress, not logged-in people.
-- **`engagement`** returns per-page-visit engagement (a visit = one `view_id`): `engagedVisitRate` (visible ≥10s OR scrolled ≥50% OR an outbound/download click), `avgEventsPerVisit` (your custom `track()` events; auto scroll/outbound events excluded), and — when the matching client tracking is on — `scrollReach75`, `outboundRate`, and a `scrollFunnel` (25/50/75/100). **`engagement?dim=path&limit=N`** returns the same per path. Scroll/outbound fields are **omitted** (not `0`) when the site emits no such events in range, so "not tracked" never reads as "0% engaged"; `engagedVisitRate` is then a lower bound resting on the time signal alone.
-- **`sessions`** (requires `SESSIONS_ENABLED`) groups a visitor's pageviews into sessions split by a `gap` of inactivity (minutes, default 30, clamped 1–240) and returns `sessions`, `avg`/`medianPagesPerSession`, `avg`/`medianDurationMs`, and a session-level `bounceRate`. **`sessions?dim=entry`** / **`dim=exit`** return the top entry / exit pages. A single-pageview session has duration 0. Because the visitor-hash salt rotates at 00:00 UTC, **sessions never cross midnight UTC** (a visit spanning it splits in two) — the same constraint behind `uniqueVisitors`. This `bounceRate` is single-pageview *sessions*; `summary.bounceRate` is single-pageview visitor-*days* — the session figure is the standard one.
-- **`funnel`** (requires `SESSIONS_ENABLED`) takes `steps` — 2–10 comma-separated pageview paths — and reports, per step, how many sessions reached it **in order** (`sessions`), plus `conversionFromPrev` and `conversionFromStart`. Steps must occur in time order within a session (gap/`gap` as for `sessions`); a later step seen before its predecessor doesn't count. Example: `steps=/,/pricing,/signup`.
 
 > **Note on `uniqueVisitors`:** the visitor hash is salted with a salt that rotates every UTC day and is pruned after retention, so the same person hashes differently each day. Over a multi-day range `uniqueVisitors` therefore counts *visitor-days*, not distinct people — a visitor active on N days counts as N. This is a deliberate consequence of the cookie-free, unlinkable-by-design model. For a per-day figure, query a 1-day range per day.
 
-`top` dimensions: `path`, `referrer`, `country`, `device`, `viewport`, `utm_source`, `utm_medium`, `utm_campaign`, and (sessions only) `browser`, `os`.
+`top` dimensions: `path`, `referrer`, `country`, `device`, `utm_source`, `utm_medium`, `utm_campaign`.
 
 `events` returns the top event names for a site; add `name=<event>&by=<prop>` to get the distribution of one event's prop value (e.g. scroll-depth milestones).
 
@@ -85,15 +75,13 @@ anything else is a `400` with `{"message": "..."}`. The sender is the server's
 
 ## What gets collected
 
-- Pageviews (path, referrer domain, device class, viewport bucket, country, UTM tags)
-- Custom events (name + optional props) — including opt-in scroll depth and outbound/download clicks
-- Web vitals (LCP, FCP, CLS, INP, TTFB)
+- Pageviews (path, referrer domain, device class, country, UTM tags)
+- Custom events (name + optional props) — including opt-in outbound/download clicks
 - **Time on page** — visible duration only. The client never measures while the tab is hidden, and stops at 30 minutes per page.
 
 Optional, only when `SESSIONS_ENABLED=1` (off by default):
 
 - Unique visitors, sessions, bounce rate
-- Browser + OS *family* (e.g. "Chrome / macOS", never versions)
 
 The selected client IP is processed transiently for rate limiting. It is never
 stored. Session hashing uses that same selected IP only when

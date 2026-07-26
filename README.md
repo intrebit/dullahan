@@ -11,7 +11,7 @@ One Rust binary + a Postgres replaces a tracking SaaS, a headless CMS, and a con
 
 ## What you get
 
-- **Analytics** — `/collect` ingest + a `/stats/*` read API: pageviews, web vitals, time-on-page, custom events, channels, engagement, sessions, funnels.
+- **Analytics** — `/collect` ingest + a `/stats/*` read API: pageviews, unique visitors, bounce rate, time-on-page, top pages/referrers/countries/devices/campaigns, acquisition channels, real-time active visitors, and custom events/goals.
 - **Tracker** — a ~3 KB browser script, baked into the binary and served at `/pt.js`. One `<script>` tag, no npm, no build step.
 - **Blog / content API** — `/posts` CRUD with an atomic per-post view counter. Stores raw Markdown; your frontend renders it.
 - **Contact** — `/contact` takes a form POST and emails it (via Resend), with a per-site recipient so one server can host several sites' forms.
@@ -57,7 +57,7 @@ Tracker opt-ins and custom events are in [`tracker/README.md`](tracker/README.md
 
 ## Privacy
 
-No cookies, no fingerprinting, **no raw IP storage — ever.** The server processes the client IP transiently for rate limiting; with sessions **off** (the default), `/collect` otherwise uses neither IP nor User-Agent. With sessions **on** (`SESSIONS_ENABLED=1`), the selected client IP + User-Agent are combined with a daily-rotating salt into an anonymized hash and immediately discarded; old salts are pruned on startup and periodically while the server runs, making historical hashes permanently unlinkable after retention. Consequences embraced on purpose: `uniqueVisitors` counts visitor-*days*, sessions can't cross 00:00 UTC, and new-vs-returning / retention / DAU-MAU are impossible and intentionally not built.
+No cookies, no fingerprinting, **no raw IP storage — ever.** The surface is deliberately lean: the tracker collects no web vitals, no scroll depth, and no outbound-link clicks, and the server never parses the User-Agent for analytics (no browser/OS/viewport columns). The server processes the client IP transiently for rate limiting; with sessions **off** (the default), `/collect` otherwise uses neither IP nor User-Agent. With sessions **on** (`SESSIONS_ENABLED=1`), the selected client IP + User-Agent are combined with a daily-rotating salt into an anonymized hash and immediately discarded (the UA is never stored); old salts are pruned on startup and periodically while the server runs, making historical hashes permanently unlinkable after retention. Consequences embraced on purpose: `uniqueVisitors` counts visitor-*days*, and new-vs-returning / retention / DAU-MAU are impossible and intentionally not built.
 
 ## Documentation
 

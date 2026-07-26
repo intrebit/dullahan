@@ -54,18 +54,29 @@ promises metrics the data can't support:
   **UTC day** (salt rotates at 00:00 UTC, then is pruned after retention). Only set when
   `SESSIONS_ENABLED`. The basis for sessions; **cannot** link across days.
 
-`type ∈ {pageview, event, performance, pageleave}`. Client time is `ts` (bigint
+`type ∈ {pageview, event, pageleave}`. `pageleave` carries only a dwell time
+(`dur`) for time-on-page — there is no scroll-depth. Client time is `ts` (bigint
 ms, clamped to a sane window on ingest); server receive time is `received_at`.
 
 ## Stats API conventions
 
-- **Additive only.** New stats are new fields / params / endpoints; never rename
-  or remove. Prove back-compat by leaving existing tests unchanged.
+- **Additive within the kept surface.** Day to day, treat the six endpoints below
+  as append-only: new stats are new fields / params / endpoints; don't rename or
+  remove them, and prove back-compat by leaving existing tests unchanged.
+- **Removal is allowed as a deliberate scope decision.** On 2026-07-26 the metric
+  surface was intentionally trimmed — `/stats/vitals`, `/stats/heatmap`,
+  `/stats/engagement`, `/stats/sessions`, and `/stats/funnel` were removed (along
+  with web-vitals, scroll, and outbound tracking). This was a positioning call:
+  dullahan is **not** trying to match Plausible/competitors on breadth; it keeps a
+  small, sharp core. So "never remove" is a rule of thumb about not churning the
+  *kept* endpoints, not a ban on cutting scope when it's a considered decision.
+- **The kept endpoints**: `/stats/summary`, `/stats/timeseries`, `/stats/top`,
+  `/stats/events`, `/stats/channels`, `/stats/realtime`.
 - **Dual-shape pattern**: an endpoint returns a summary *object* with no `dim`,
-  and an *array* with `dim=…` (see `vitals`, `engagement`, `sessions`). Reuse it.
-- **Honest nulls**: a metric that depends on an opt-in (sessions, scroll/outbound
-  tracking) is **omitted** when its source data is absent, never reported as `0`
-  (mirrors the `uniqueVisitors` NULLIF). "Not measured" ≠ "zero".
+  and an *array* with `dim=…`. Reuse it.
+- **Honest nulls**: a metric that depends on an opt-in (sessions) is **omitted**
+  when its source data is absent, never reported as `0` (mirrors the
+  `uniqueVisitors` NULLIF). "Not measured" ≠ "zero".
 - `/stats/*` is admin-gated (`ADMIN_TOKEN`) + CORS-scoped (`STATS_ORIGINS`).
 
 ## Migrations & indexes (lessons)
@@ -84,12 +95,10 @@ ms, clamped to a sane window on ingest); server receive time is `received_at`.
   that before adding any index:
   - `(site_id, received_at)` — needed for `/stats/realtime` (filters server
     receive time; every other index is on client `ts`).
-  - **No `(site_id, view_id)` index** — engagement groups by `view_id` over a
+  - **No `(site_id, view_id)` index** — time-on-page groups by `view_id` over a
     `(site_id, ts)`-bounded scan; the view_id index is ignored on selective ranges
     and loses to a parallel seq-scan on wide ones, while costing random-UUID writes
     on the hot `/collect` path.
-  - **No new index for sessions/funnels** — `(site_id, visitor_hash, ts)`
-    already serves the sessionization window.
 
 ## Gotchas
 
@@ -98,10 +107,10 @@ ms, clamped to a sane window on ingest); server receive time is `received_at`.
   `wait_for_count` poll helper.
 - **Range bucketing uses `ts`** (client, clamped); **realtime uses `received_at`**
   (server). Don't mix them.
-- A free-text value bound into SQL (e.g. `tz`) must be charset/length-guarded,
-  then a Postgres `22023` error mapped to HTTP 400 (don't 500). See `stats::heatmap`.
-- Casting attacker-controlled JSON: guard before `::int` (e.g. scroll `pct` uses a
-  `~ '^[0-9]{1,3}$'` filter) so a hostile event prop can't crash a read query.
+- A free-text value bound into SQL must be charset/length-guarded, then a Postgres
+  `22023` error mapped to HTTP 400 (don't 500).
+- Casting attacker-controlled JSON: guard before `::int` with a
+  `~ '^[0-9]{1,3}$'`-style filter so a hostile event prop can't crash a read query.
 - A numeric `top` dimension needs `column()` to return `"<col>::text"` (the generic
   query reads `key` as text, else `"(none)"`).
 - `percentile_cont` over a `bigint` expression needs `::float8`.
@@ -126,5 +135,8 @@ intentionally not built**. Don't fake cross-day identity.
 
 ## Status
 
-The metrics roadmap is complete (read-only stats, realtime, engagement, sessions,
-funnels — all merged). See [`docs/api.md`](docs/api.md) for the full catalog.
+The metric surface is a deliberately small core: read-only stats (summary,
+timeseries, top, events, channels) plus realtime. Engagement, sessions, and
+funnels were built and then **removed** on 2026-07-26 as a scope decision (see
+*Stats API conventions*) — don't reintroduce them without a positioning reason.
+See [`docs/api.md`](docs/api.md) for the full catalog.

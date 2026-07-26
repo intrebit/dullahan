@@ -3,7 +3,6 @@ import {
   stripQueryParams,
   getReferrerDomain,
   getDeviceClass,
-  roundViewportWidth,
   checkDNT,
   extractCampaign,
 } from '../src/privacy'
@@ -75,18 +74,6 @@ describe('getDeviceClass', () => {
   it('returns desktop for width >= 1024', () => {
     expect(getDeviceClass(1024)).toBe('desktop')
     expect(getDeviceClass(1920)).toBe('desktop')
-  })
-})
-
-describe('roundViewportWidth', () => {
-  it('rounds to nearest 10', () => {
-    expect(roundViewportWidth(1440)).toBe(1440)
-    expect(roundViewportWidth(1443)).toBe(1440)
-    expect(roundViewportWidth(1447)).toBe(1450)
-  })
-
-  it('handles zero', () => {
-    expect(roundViewportWidth(0)).toBe(0)
   })
 })
 

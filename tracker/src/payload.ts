@@ -1,15 +1,8 @@
-import type {
-  PageviewPayload,
-  EventPayload,
-  PerformancePayload,
-  PageleavePayload,
-  PerformanceMetrics,
-} from './types'
+import type { PageviewPayload, EventPayload, PageleavePayload } from './types'
 import {
   stripQueryParams,
   getReferrerDomain,
   getDeviceClass,
-  roundViewportWidth,
   extractCampaign,
 } from './privacy'
 
@@ -18,7 +11,6 @@ export function getPath(): string {
 }
 
 export function buildPageViewPayload(path?: string): Omit<PageviewPayload, 's'> {
-  const w = roundViewportWidth(window.innerWidth)
   const u = extractCampaign(location.search)
 
   return {
@@ -27,7 +19,6 @@ export function buildPageViewPayload(path?: string): Omit<PageviewPayload, 's'> 
     ts: Date.now(),
     r: getReferrerDomain(),
     d: getDeviceClass(window.innerWidth),
-    v: w > 0 ? w : undefined,
     ...(u ? { u } : {}),
   }
 }
@@ -42,15 +33,6 @@ export function buildEventPayload(
     ts: Date.now(),
     n: name,
     ...(props && Object.keys(props).length > 0 ? { pr: props } : {}),
-  }
-}
-
-export function buildPerformancePayload(metrics: PerformanceMetrics): Omit<PerformancePayload, 's'> {
-  return {
-    t: 'performance',
-    p: getPath(),
-    ts: Date.now(),
-    pf: metrics,
   }
 }
 

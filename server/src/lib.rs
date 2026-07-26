@@ -52,8 +52,6 @@ pub mod state;
 pub mod stats;
 #[doc(hidden)]
 pub mod types;
-#[doc(hidden)]
-pub mod ua;
 
 /// Runtime configuration, built from environment variables. See [`Config::from_env`].
 pub use config::Config;
@@ -125,13 +123,8 @@ pub fn router(state: AppState) -> Router {
         .route("/stats/timeseries", get(stats::timeseries))
         .route("/stats/top", get(stats::top))
         .route("/stats/events", get(stats::events))
-        .route("/stats/vitals", get(stats::vitals))
-        .route("/stats/heatmap", get(stats::heatmap))
         .route("/stats/channels", get(stats::channels))
         .route("/stats/realtime", get(stats::realtime))
-        .route("/stats/engagement", get(stats::engagement))
-        .route("/stats/sessions", get(stats::sessions))
-        .route("/stats/funnel", get(stats::funnel))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_admin))
         .layer(cors_stats);
 
