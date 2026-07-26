@@ -15,6 +15,7 @@ fn test_state(pool: PgPool) -> AppState {
             admin_token: None,
             email: None,
             contact_to: None,
+            contact_to_sites: Default::default(),
             stats_origins: None,
             behind_tls: false,
             trust_proxy_headers: false,

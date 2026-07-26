@@ -17,6 +17,7 @@ fn state(pool: PgPool, admin_token: Option<&str>) -> AppState {
             admin_token: admin_token.map(String::from),
             email: None,
             contact_to: None,
+            contact_to_sites: Default::default(),
             stats_origins: None,
             behind_tls: false,
             trust_proxy_headers: false,

@@ -11,6 +11,10 @@ pub struct ContactPayload {
     pub email: String,
     pub name: String,
     pub message: String,
+    /// Tenant this submission belongs to. Omitted by single-tenant callers,
+    /// which then get the server's default `CONTACT_TO` recipient.
+    #[serde(default)]
+    pub site: Option<String>,
 }
 
 pub async fn submit(
@@ -32,15 +36,23 @@ pub async fn submit(
         return bad_request("Message must be between 10 and 2000 characters");
     }
 
+    // Recipient before transport, so a tenant with no configured address is
+    // reported as such even on a server with email switched off entirely.
+    let site = payload
+        .site
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let to = state.config.contact_recipient(site).ok_or_else(|| {
+        if let Some(site) = site {
+            tracing::warn!(site, "no contact recipient configured for site");
+        }
+        service_unavailable("contact recipient not configured")
+    })?;
     let mailer = state
         .mailer
         .as_ref()
         .ok_or_else(|| service_unavailable("email transport not configured"))?;
-    let to = state
-        .config
-        .contact_to
-        .as_deref()
-        .ok_or_else(|| service_unavailable("contact recipient not configured"))?;
 
     if let Err(err) = mailer.send_contact(to, name, email, message).await {
         tracing::error!(error = %err, "contact email send failed");

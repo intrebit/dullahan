@@ -1,5 +1,6 @@
 //! Environment-driven configuration: env vars parsed into a typed `Config`.
 
+use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
 
@@ -16,10 +17,16 @@ pub struct Config {
     /// configured: destructive operations are secure by default.
     pub admin_token: Option<String>,
     pub email: Option<EmailConfig>,
-    /// Recipient for `POST /contact` submissions. Required for the endpoint to
-    /// accept; without it the route returns 503 so misconfigured deploys
-    /// fail loudly instead of silently dropping form submissions.
+    /// Default recipient for `POST /contact` submissions that name no tenant.
+    /// Required for the endpoint to accept; without it the route returns 503 so
+    /// misconfigured deploys fail loudly instead of silently dropping form
+    /// submissions.
     pub contact_to: Option<String>,
+    /// Per-tenant `/contact` recipients from `CONTACT_TO_<SITE>` env vars, keyed
+    /// by normalized site id (`CONTACT_TO_LDG` → `ldg`). A submission naming a
+    /// site with no entry here is refused rather than delivered to
+    /// `contact_to` — one tenant's enquiries must never land in another's inbox.
+    pub contact_to_sites: HashMap<String, String>,
     /// Allowed `Origin` values for `/stats/*`. Empty/unset = `*`. Set this
     /// to your dashboard origin (e.g. `https://stats.example.com`) so a
     /// browser on any other origin can't read stats responses even if the
@@ -118,10 +125,132 @@ impl Config {
             admin_token,
             email,
             contact_to,
+            contact_to_sites: contact_sites_from(env::vars()),
             stats_origins,
             behind_tls,
             trust_proxy_headers,
             sessions_enabled,
         })
+    }
+
+    /// Recipient for a `/contact` submission. `None` means "refuse": a tenant
+    /// with no configured recipient must get a 503, not another tenant's inbox.
+    pub fn contact_recipient(&self, site: Option<&str>) -> Option<&str> {
+        match site {
+            Some(site) => self
+                .contact_to_sites
+                .get(&normalize_site(site))
+                .map(String::as_str),
+            None => self.contact_to.as_deref(),
+        }
+    }
+}
+
+/// Site ids are lowercase and may contain `-`, which env var names can't, so
+/// both sides normalize to lowercase with non-alphanumerics as `_`
+/// (`CONTACT_TO_MY_SITE` matches site `my-site`).
+fn normalize_site(site: &str) -> String {
+    site.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn contact_sites_from(vars: impl Iterator<Item = (String, String)>) -> HashMap<String, String> {
+    vars.filter_map(|(key, value)| {
+        let site = key.strip_prefix("CONTACT_TO_")?;
+        let value = value.trim();
+        if site.is_empty() || value.is_empty() {
+            return None;
+        }
+        Some((normalize_site(site), value.to_string()))
+    })
+    .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(default_to: Option<&str>, sites: &[(&str, &str)]) -> Config {
+        Config {
+            bind_addr: String::new(),
+            database_url: String::new(),
+            allowed_sites: None,
+            admin_token: None,
+            email: None,
+            contact_to: default_to.map(String::from),
+            contact_to_sites: sites
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            stats_origins: None,
+            behind_tls: false,
+            trust_proxy_headers: false,
+            sessions_enabled: false,
+        }
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Iterator<Item = (String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
+    #[test]
+    fn env_prefix_builds_the_tenant_map() {
+        let map = contact_sites_from(vars(&[
+            ("CONTACT_TO", "default@example.com"),
+            ("CONTACT_TO_LDG", "booking@ldg.ie"),
+            ("CONTACT_TO_MY_SITE", "hi@my-site.com"),
+            ("CONTACT_TO_BLANK", "  "),
+            ("CONTACT_TO_", "orphan@example.com"),
+            ("DATABASE_URL", "postgres://x"),
+        ]));
+
+        assert_eq!(map.get("ldg").map(String::as_str), Some("booking@ldg.ie"));
+        assert_eq!(
+            map.get("my_site").map(String::as_str),
+            Some("hi@my-site.com")
+        );
+        assert_eq!(map.len(), 2, "blank values and bare CONTACT_TO are skipped");
+    }
+
+    #[test]
+    fn tenant_gets_its_own_recipient() {
+        let cfg = config(Some("default@example.com"), &[("ldg", "booking@ldg.ie")]);
+        assert_eq!(cfg.contact_recipient(Some("ldg")), Some("booking@ldg.ie"));
+    }
+
+    #[test]
+    fn unknown_tenant_never_falls_back_to_the_default() {
+        let cfg = config(Some("default@example.com"), &[("ldg", "booking@ldg.ie")]);
+        assert_eq!(cfg.contact_recipient(Some("someone-else")), None);
+    }
+
+    #[test]
+    fn no_tenant_named_uses_the_default() {
+        let cfg = config(Some("default@example.com"), &[("ldg", "booking@ldg.ie")]);
+        assert_eq!(cfg.contact_recipient(None), Some("default@example.com"));
+        assert_eq!(config(None, &[]).contact_recipient(None), None);
+    }
+
+    #[test]
+    fn site_lookup_normalizes_case_and_dashes() {
+        let cfg = config(None, &[("my_site", "hi@my-site.com")]);
+        for site in ["my-site", "My-Site", "MY_SITE", "my.site"] {
+            assert_eq!(
+                cfg.contact_recipient(Some(site)),
+                Some("hi@my-site.com"),
+                "site {site} should resolve"
+            );
+        }
     }
 }

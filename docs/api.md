@@ -1,9 +1,9 @@
 # HTTP API reference
 
-dullahan exposes three HTTP surfaces: the **stats read API** (`/stats/*`,
+dullahan exposes four HTTP surfaces: the **stats read API** (`/stats/*`,
 camelCase JSON, admin-gated), the **blog/content API** (`/posts`, snake_case
-JSON), and ingest (`/collect`, written by the tracker — see the
-[README](../README.md)). For an architecture tour see
+JSON), the **contact form** (`/contact`), and ingest (`/collect`, written by the
+tracker — see the [README](../README.md)). For an architecture tour see
 [`overview.md`](overview.md); for a copy-paste walkthrough see
 [`../examples/QUICKSTART.md`](../examples/QUICKSTART.md).
 
@@ -60,6 +60,29 @@ DELETE /posts/:id                                  # delete (admin) -> 204
 - **Auth.** Create / update / delete require a configured `ADMIN_TOKEN` and the same `Authorization: Bearer $ADMIN_TOKEN` as `/stats/*`; without a configured token, destructive blog writes return `401`. Blog reads follow the stats open-mode behavior: when `ADMIN_TOKEN` is unset, reads are open, including `status=all`.
 - **Drafts.** `draft=true` posts are hidden from the published list and return 404 on `GET /posts/:slug` unless the request is admin-authed. `POST /posts/:slug/view` only counts non-draft posts and is always a no-op `204` (missing/draft slug included) — no dedupe; debounce client-side.
 - **`POST /posts`** body: `{ slug, title, description?, author?, image?, body_markdown, draft?, pub_date? }`. `slug` must match `^[a-z0-9-]+$`; duplicate slug returns `409`. **`PATCH /posts/:id`** accepts any subset of those fields and sets `updated_date`.
+
+## Contact form (`POST /contact`)
+
+Takes a form submission and emails it via Resend. Public (no auth), rate-limited
+to ~5/min per IP, and disabled — `503` — until the server has both an email
+transport (`RESEND_API_KEY` + `EMAIL_FROM`) and a recipient.
+
+```
+POST /contact   {"name": "...", "email": "...", "message": "...", "site": "ldg"}  -> 201
+```
+
+`email` must look like an address, `name` ≤ 80 chars, `message` 10–2000 chars;
+anything else is a `400` with `{"message": "..."}`. The sender is the server's
+`EMAIL_FROM`, with the submitter's address as `Reply-To`.
+
+- **`site` is optional and selects the recipient.** Omit it and the mail goes to
+  `CONTACT_TO`. Send it and the mail goes to `CONTACT_TO_<SITE>`, so one server
+  can host several sites' forms (`site: "ldg"` → `CONTACT_TO_LDG`). Site ids are
+  matched case-insensitively with non-alphanumerics as `_`, so `my-site` and
+  `my.site` both read `CONTACT_TO_MY_SITE`.
+- **An unrecognized `site` is refused with `503`, never delivered to
+  `CONTACT_TO`.** A typo'd or missing tenant config fails loudly (and logs a
+  warning) instead of leaking one site's enquiries into another's inbox.
 
 ## What gets collected
 

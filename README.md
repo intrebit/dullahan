@@ -14,7 +14,7 @@ One Rust binary + a Postgres replaces a tracking SaaS, a headless CMS, and a con
 - **Analytics** — `/collect` ingest + a `/stats/*` read API: pageviews, web vitals, time-on-page, custom events, channels, engagement, sessions, funnels.
 - **Tracker** — a ~3 KB browser script, baked into the binary and served at `/pt.js`. One `<script>` tag, no npm, no build step.
 - **Blog / content API** — `/posts` CRUD with an atomic per-post view counter. Stores raw Markdown; your frontend renders it.
-- **Contact** — `/contact` takes a form POST and emails it (via Resend).
+- **Contact** — `/contact` takes a form POST and emails it (via Resend), with a per-site recipient so one server can host several sites' forms.
 - **Privacy by design** — no cookies, no fingerprinting, **no raw IP storage, ever**.
 
 ## Quick start
