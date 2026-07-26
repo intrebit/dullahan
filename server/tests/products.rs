@@ -19,6 +19,7 @@ fn state_cur(pool: PgPool, admin_token: Option<&str>, currency: &str) -> AppStat
             contact_to: None,
             contact_to_sites: Default::default(),
             stats_origins: None,
+            product_origins: None,
             behind_tls: false,
             trust_proxy_headers: false,
             sessions_enabled: false,
@@ -32,6 +33,29 @@ fn state_cur(pool: PgPool, admin_token: Option<&str>, currency: &str) -> AppStat
 
 fn state(pool: PgPool, admin_token: Option<&str>) -> AppState {
     state_cur(pool, admin_token, "EUR")
+}
+
+fn state_cors(pool: PgPool, product_origins: Option<Vec<String>>) -> AppState {
+    AppState {
+        config: Arc::new(Config {
+            bind_addr: "0.0.0.0:0".into(),
+            database_url: String::new(),
+            allowed_sites: None,
+            admin_token: None,
+            email: None,
+            contact_to: None,
+            contact_to_sites: Default::default(),
+            stats_origins: None,
+            product_origins,
+            behind_tls: false,
+            trust_proxy_headers: false,
+            sessions_enabled: false,
+            shop_currency: "EUR".into(),
+        }),
+        pool,
+        mailer: None,
+        salt_cache: dullahan::salt::new_cache(),
+    }
 }
 
 fn request(method: &str, uri: &str, token: Option<&str>, body: Option<Value>) -> Request<Body> {
@@ -464,6 +488,100 @@ async fn malformed_uuid_is_404_on_patch_and_delete(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test]
+async fn cors_open_by_default_for_cross_origin_reads(pool: PgPool) {
+    // No PRODUCT_ORIGINS => any origin may read the catalog (mirrors /collect).
+    let app = router(state_cors(pool, None));
+    let resp = app
+        .oneshot(
+            Request::get("/products")
+                .header(header::ORIGIN, "https://shop.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .unwrap(),
+        "*",
+        "open reads advertise a wildcard ACAO"
+    );
+}
+
+#[sqlx::test]
+async fn cors_reflects_allowlisted_origin(pool: PgPool) {
+    let app = router(state_cors(pool, Some(vec!["https://shop.example".into()])));
+    let resp = app
+        .oneshot(
+            Request::get("/products")
+                .header(header::ORIGIN, "https://shop.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .unwrap(),
+        "https://shop.example",
+        "an allowlisted origin is reflected"
+    );
+}
+
+#[sqlx::test]
+async fn cors_wildcard_origin_does_not_panic(pool: PgPool) {
+    // PRODUCT_ORIGINS="*" must collapse to Any, not be passed to allow_origin(list)
+    // (which tower-http rejects) — mirrors the stats wildcard guard.
+    let app = router(state_cors(pool, Some(vec!["*".into()])));
+    let resp = app
+        .oneshot(Request::get("/products").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[sqlx::test]
+async fn cors_preflight_allows_get_and_post_not_delete(pool: PgPool) {
+    let app = router(state_cors(pool, None));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/products")
+                .header(header::ORIGIN, "https://shop.example")
+                .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "preflight answered by CORS layer; got {:?}",
+        resp.status()
+    );
+    let allow = resp
+        .headers()
+        .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(allow.contains("GET"), "GET allowed; got {allow}");
+    assert!(
+        allow.contains("POST"),
+        "POST (the /view ping) allowed; got {allow}"
+    );
+    assert!(
+        !allow.contains("DELETE") && !allow.contains("PATCH"),
+        "admin mutating verbs are not CORS-exposed; got {allow}"
+    );
 }
 
 #[sqlx::test]

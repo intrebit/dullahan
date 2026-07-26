@@ -19,6 +19,7 @@ fn state(pool: PgPool, admin_token: Option<&str>) -> AppState {
             contact_to: None,
             contact_to_sites: Default::default(),
             stats_origins: None,
+            product_origins: None,
             behind_tls: false,
             trust_proxy_headers: false,
             sessions_enabled: false,

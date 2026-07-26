@@ -32,6 +32,12 @@ pub struct Config {
     /// browser on any other origin can't read stats responses even if the
     /// admin token leaks into URL bar / page source.
     pub stats_origins: Option<Vec<String>>,
+    /// Allowed `Origin` values for public product reads (`GET /products` and the
+    /// `/products/:slug/view` ping) so a storefront on another origin can fetch
+    /// the catalog from the browser. Empty/unset = `*`: the published catalog is
+    /// public, so open by default (like `/collect`). Set to your storefront
+    /// origin(s) to restrict. Admin writes stay token-gated regardless.
+    pub product_origins: Option<Vec<String>>,
     /// `true` if the server is fronted by HTTPS (so HSTS is safe to send).
     /// The header is harmless on plain HTTP but pointless. Default false.
     pub behind_tls: bool,
@@ -108,6 +114,13 @@ impl Config {
                 .collect()
         });
 
+        let product_origins = env::var("PRODUCT_ORIGINS").ok().map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        });
+
         let behind_tls = env::var("BEHIND_TLS")
             .ok()
             .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
@@ -138,6 +151,7 @@ impl Config {
             contact_to,
             contact_to_sites: contact_sites_from(env::vars()),
             stats_origins,
+            product_origins,
             behind_tls,
             trust_proxy_headers,
             sessions_enabled,
@@ -202,6 +216,7 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             stats_origins: None,
+            product_origins: None,
             behind_tls: false,
             trust_proxy_headers: false,
             sessions_enabled: false,
