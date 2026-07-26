@@ -20,14 +20,14 @@ GET /stats/channels?site=my-site&days=30
 GET /stats/realtime?site=my-site&minutes=5
 ```
 
-`top?dim=path` returns `avgDurMs` and `medianDurMs` per path. `summary` returns `avgTimeOnPageMs`, `medianTimeOnPageMs`, and `p75TimeOnPageMs`. With sessions enabled (see below), `summary` also returns `uniqueVisitors` and `bounceRate`.
+`summary` returns `avgTimeOnPageMs`. With sessions enabled (see below), it also returns `avgDailyVisitors` and `bounceRate`.
 
 - **`summary?compare=prev`** adds `previous` (same metrics for the immediately preceding equal-length window) and `change` (percentage deltas; `null` when the previous value is 0).
-- **`timeseries`** includes a per-bucket `uniqueVisitors` when sessions are on — plot this instead of the range-wide total (see the note below).
+- **`timeseries`** includes a per-bucket `uniqueVisitors` when sessions are on — the distinct visitors *within each bucket* (a bucket is one UTC day at the default `day` granularity).
 - **`channels`** groups pageviews into marketing channels (Direct / Organic Search / Social / Paid / Campaign / Referral) from the referrer host + UTM tags. The brand lists are heuristic.
 - **`realtime`** returns `active` — distinct page-visits with any event in the last `minutes` (default 5, clamped 1–60) — plus the top active `pages`. It counts on the server's receive time (not the client clock) and needs no opt-in. Cookie-free, so "active" means page-visits in progress, not logged-in people.
 
-> **Note on `uniqueVisitors`:** the visitor hash is salted with a salt that rotates every UTC day and is pruned after retention, so the same person hashes differently each day. Over a multi-day range `uniqueVisitors` therefore counts *visitor-days*, not distinct people — a visitor active on N days counts as N. This is a deliberate consequence of the cookie-free, unlinkable-by-design model. For a per-day figure, query a 1-day range per day.
+> **Note on visitor counts:** the visitor hash is salted with a salt that rotates every UTC day and is pruned after retention, so the same person hashes differently each day — a true cross-day unique count is impossible by design (cookie-free, unlinkable). `summary` therefore reports **`avgDailyVisitors`**: the mean of the per-UTC-day distinct-visitor counts over the range — an honest "typical day" figure rather than an inflated range-wide total. For the day-by-day series, read `uniqueVisitors` from `timeseries`.
 
 `top` dimensions: `path`, `referrer`, `country`, `device`, `utm_source`, `utm_medium`, `utm_campaign`.
 
@@ -49,6 +49,24 @@ DELETE /posts/:id                                  # delete (admin) -> 204
 - **Auth.** Create / update / delete require a configured `ADMIN_TOKEN` and the same `Authorization: Bearer $ADMIN_TOKEN` as `/stats/*`; without a configured token, destructive blog writes return `401`. Blog reads follow the stats open-mode behavior: when `ADMIN_TOKEN` is unset, reads are open, including `status=all`.
 - **Drafts.** `draft=true` posts are hidden from the published list and return 404 on `GET /posts/:slug` unless the request is admin-authed. `POST /posts/:slug/view` only counts non-draft posts and is always a no-op `204` (missing/draft slug included) — no dedupe; debounce client-side.
 - **`POST /posts`** body: `{ slug, title, description?, author?, image?, body_markdown, draft?, pub_date? }`. `slug` must match `^[a-z0-9-]+$`; duplicate slug returns `409`. **`PATCH /posts/:id`** accepts any subset of those fields and sets `updated_date`.
+
+## Product catalog (`/products`)
+
+A headless product listing for a simple webshop — no cart, no orders, no stock counts. Same shape and auth model as the blog: JSON with **snake_case** keys, public reads, admin-gated writes. Each response also carries a `currency` field (from `SHOP_CURRENCY`, default `EUR`).
+
+```
+GET    /products?limit=50&offset=0&status=published   # list (status=all incl. drafts needs admin)
+GET    /products/:slug                                # single product
+POST   /products/:slug/view                           # public, atomic view++ -> 204
+POST   /products                                      # create (admin) -> 201
+PATCH  /products/:id                                  # update (admin) -> 200
+DELETE /products/:id                                  # delete (admin) -> 204
+```
+
+- **View counter.** Each product carries a `views` count. `POST /products/:slug/view` increments it — call it from the frontend when a product page is shown (debounce client-side). Like the blog counter it only counts non-draft products and is always a no-op `204` (missing/draft slug included). This is how the owner sees which products are being viewed, without touching `/stats/*`.
+- **Fields.** `{ slug, title, description?, image?, price_cents?, available?, position?, draft? }` (`views` is read-only, server-managed). `price_cents` is an **integer count of minor units** (e.g. `1299` = €12.99 when `SHOP_CURRENCY=EUR`) — there is no per-product currency and no floating-point money. `slug` must match `^[a-z0-9-]+$`; a duplicate slug returns `409`. A negative `price_cents` returns `400`.
+- **Listing.** Ordered by `position` ascending, then newest first. `available=false` (sold out) items are **still listed** — it's a display flag for the frontend, not a filter. `draft=true` items are hidden from the public list and 404 on `GET /products/:slug` unless admin-authed.
+- **Auth.** Create / update / delete require a configured `ADMIN_TOKEN` (same bearer as `/stats/*`); reads follow stats open-mode (open when no token is set). **`PATCH /products/:id`** accepts any subset of the create fields and sets `updated_date`.
 
 ## Contact form (`POST /contact`)
 
