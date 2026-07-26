@@ -1,8 +1,6 @@
 //! Transactional email sending via the Resend API.
 
 use crate::config::EmailConfig;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::json;
 use thiserror::Error;
 use tokio::time::{error::Elapsed, timeout};
@@ -63,30 +61,6 @@ impl Mailer {
         self.dispatch(payload).await
     }
 
-    pub async fn send_with_attachment(
-        &self,
-        to: &str,
-        subject: &str,
-        body_text: &str,
-        attachment: (&str, &[u8]),
-        from_display: Option<&str>,
-        reply_to: Option<&str>,
-    ) -> Result<(), EmailError> {
-        let (filename, bytes) = attachment;
-        let mut payload = json!({
-            "from": self.build_from_header(from_display),
-            "to": [to],
-            "subject": subject,
-            "text": body_text,
-            "attachments": [{
-                "filename": filename,
-                "content": BASE64.encode(bytes),
-            }],
-        });
-        attach_reply_to(&mut payload, reply_to);
-        self.dispatch(payload).await
-    }
-
     pub async fn send_contact(
         &self,
         to: &str,
@@ -102,15 +76,6 @@ impl Mailer {
             "text": message,
         });
         self.dispatch(payload).await
-    }
-
-    pub async fn verify_api_key(&self) -> Result<bool, EmailError> {
-        let req = self
-            .http
-            .get(format!("{RESEND_API_BASE}/domains"))
-            .bearer_auth(&self.config.resend_api_key);
-        let resp = timeout(self.config.timeout, req.send()).await??;
-        Ok(resp.status().is_success())
     }
 
     async fn dispatch(&self, payload: serde_json::Value) -> Result<(), EmailError> {

@@ -127,12 +127,21 @@ pub async fn summary(
             COUNT(*) FILTER (WHERE type = 'pageview')::bigint AS pageviews,
             COUNT(*) FILTER (WHERE type = 'event')::bigint     AS events,
             (AVG(dur_ms) FILTER (WHERE type = 'pageleave'))::float8 AS avg_time_on_page_ms,
-            (percentile_cont(0.5)  WITHIN GROUP (ORDER BY dur_ms) FILTER (WHERE type = 'pageleave'))::float8 AS median_time_on_page_ms,
-            (percentile_cont(0.75) WITHIN GROUP (ORDER BY dur_ms) FILTER (WHERE type = 'pageleave'))::float8 AS p75_time_on_page_ms,
-            NULLIF(
-              COUNT(DISTINCT visitor_hash) FILTER (WHERE type = 'pageview' AND visitor_hash IS NOT NULL),
-              0
-            )::bigint AS unique_visitors,
+            (
+              -- Unique visitors averaged per UTC day. The visitor hash is salted
+              -- per day, so a distinct count over a multi-day range tallies
+              -- visitor-days, not people; averaging the daily counts gives the
+              -- honest \"typical day\" figure. NULL (⇒ omitted) when sessions off.
+              -- `ts / 86400000` buckets epoch-ms into UTC days — integer math, so
+              -- immune to the DB session timezone, and aligned with the salt day.
+              SELECT AVG(daily)::float8 FROM (
+                SELECT COUNT(DISTINCT visitor_hash) AS daily
+                  FROM analytics_events
+                 WHERE site_id = $1 AND ts BETWEEN $2 AND $3
+                       AND type = 'pageview' AND visitor_hash IS NOT NULL
+                 GROUP BY ts / 86400000
+              ) d
+            ) AS avg_daily_visitors,
             (
               SELECT path FROM analytics_events
                WHERE site_id = $1 AND ts BETWEEN $2 AND $3 AND type = 'pageview'
@@ -168,16 +177,8 @@ pub async fn summary(
             .try_get::<Option<f64>, _>("avg_time_on_page_ms")
             .ok()
             .flatten(),
-        median_time_on_page_ms: row
-            .try_get::<Option<f64>, _>("median_time_on_page_ms")
-            .ok()
-            .flatten(),
-        p75_time_on_page_ms: row
-            .try_get::<Option<f64>, _>("p75_time_on_page_ms")
-            .ok()
-            .flatten(),
-        unique_visitors: row
-            .try_get::<Option<i64>, _>("unique_visitors")
+        avg_daily_visitors: row
+            .try_get::<Option<f64>, _>("avg_daily_visitors")
             .ok()
             .flatten(),
         bounce_rate: row.try_get::<Option<f64>, _>("bounce_rate").ok().flatten(),
@@ -228,43 +229,6 @@ pub async fn top(
     dim: TopDimension,
     limit: i64,
 ) -> sqlx::Result<Vec<TopRow>> {
-    if matches!(dim, TopDimension::Path) {
-        let rows = sqlx::query(
-            "SELECT path AS key,
-                    COUNT(*) FILTER (WHERE type = 'pageview')::bigint AS count,
-                    (AVG(dur_ms) FILTER (WHERE type = 'pageleave'))::float8 AS avg_dur_ms,
-                    (percentile_cont(0.5) WITHIN GROUP (ORDER BY dur_ms) FILTER (WHERE type = 'pageleave'))::float8 AS median_dur_ms
-             FROM analytics_events
-             WHERE site_id = $1 AND ts BETWEEN $2 AND $3
-                   AND type IN ('pageview', 'pageleave')
-                   AND path IS NOT NULL
-             GROUP BY path
-             HAVING COUNT(*) FILTER (WHERE type = 'pageview') > 0
-             ORDER BY count DESC
-             LIMIT $4",
-        )
-        .bind(site_id)
-        .bind(from_ts)
-        .bind(to_ts)
-        .bind(limit)
-        .fetch_all(pool)
-        .await?;
-
-        return Ok(rows
-            .into_iter()
-            .map(|r| TopRow {
-                key: r
-                    .try_get::<Option<String>, _>("key")
-                    .ok()
-                    .flatten()
-                    .unwrap_or_else(|| "(none)".into()),
-                count: r.try_get("count").unwrap_or(0),
-                avg_dur_ms: r.try_get::<Option<f64>, _>("avg_dur_ms").ok().flatten(),
-                median_dur_ms: r.try_get::<Option<f64>, _>("median_dur_ms").ok().flatten(),
-            })
-            .collect());
-    }
-
     let col = dim.column();
     let rows = sqlx::query(&format!(
         "SELECT {col} AS key, COUNT(*)::bigint AS count
@@ -289,8 +253,6 @@ pub async fn top(
                 .flatten()
                 .unwrap_or_else(|| "(none)".into()),
             count: r.try_get("count").unwrap_or(0),
-            avg_dur_ms: None,
-            median_dur_ms: None,
         })
         .collect())
 }
@@ -349,8 +311,6 @@ pub async fn events(
                 .flatten()
                 .unwrap_or_else(|| "(none)".into()),
             count: r.try_get("count").unwrap_or(0),
-            avg_dur_ms: None,
-            median_dur_ms: None,
         })
         .collect())
 }
@@ -395,8 +355,6 @@ pub async fn channels(
         .map(|(channel, count)| TopRow {
             key: channel.to_string(),
             count,
-            avg_dur_ms: None,
-            median_dur_ms: None,
         })
         .collect();
     out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.key.cmp(&b.key)));
@@ -442,8 +400,6 @@ pub async fn realtime(pool: &PgPool, site_id: &str, minutes: i32) -> sqlx::Resul
                 .flatten()
                 .unwrap_or_else(|| "(none)".into()),
             count: r.try_get("count").unwrap_or(0),
-            avg_dur_ms: None,
-            median_dur_ms: None,
         })
         .collect();
 
