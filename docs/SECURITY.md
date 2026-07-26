@@ -17,8 +17,7 @@ You should expect an acknowledgement within a few days. Fixes for confirmed issu
 
 In scope:
 
-- The Rust server (`server/`) — ingest, stats, contact, auth middleware
-- The browser tracker (`tracker/`) — anything that could leak user data, bypass DNT, or break the cookie-free guarantee
+- The Rust server (`server/`) — ingest, stats, contact, auth middleware, anything that could leak user data or break the cookie-free guarantee
 - The default deploy scripts (`deploy/`) when used as documented
 
 Out of scope:

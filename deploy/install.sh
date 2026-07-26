@@ -78,9 +78,9 @@ fi
 
 echo "==> building release binary (this takes a few minutes)"
 install -d -o dullahan -g dullahan /opt/dullahan/build-src
-# The tracking script is vendored at server/assets/pt.js and compiled into the
-# binary (include_str!), so the build needs only Rust — no Node, no client build.
-cp -r "$SERVER_DIR/Cargo.toml" "$SERVER_DIR/src" "$SERVER_DIR/assets" "$SERVER_DIR/migrations" /opt/dullahan/build-src/
+# Pure Rust: the build needs only the crate sources and migrations — no Node,
+# no client build, no vendored assets.
+cp -r "$SERVER_DIR/Cargo.toml" "$SERVER_DIR/src" "$SERVER_DIR/migrations" /opt/dullahan/build-src/
 chown -R dullahan:dullahan /opt/dullahan/build-src
 
 sudo -u dullahan bash -c "cd /opt/dullahan/build-src && /opt/dullahan/.cargo/bin/cargo build --release --bin dullahan"
