@@ -23,7 +23,7 @@ surface read [`docs/api.md`](docs/api.md). This file is how to **work on** the r
 **Server** (from `server/`):
 ```bash
 cargo build --locked
-DATABASE_URL=postgres://fole@localhost/dullahan_test cargo test --locked   # needs Postgres
+DATABASE_URL=postgres://$USER@localhost/dullahan_test cargo test --locked   # needs Postgres
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```

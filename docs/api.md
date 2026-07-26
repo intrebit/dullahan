@@ -67,7 +67,7 @@ to ~5/min per IP, and disabled — `503` — until the server has both an email
 transport (`RESEND_API_KEY` + `EMAIL_FROM`) and a recipient.
 
 ```
-POST /contact   {"name": "...", "email": "...", "message": "...", "site": "ldg"}  -> 201
+POST /contact   {"name": "...", "email": "...", "message": "...", "site": "my-site"}  -> 201
 ```
 
 `email` must look like an address, `name` ≤ 80 chars, `message` 10–2000 chars;
@@ -76,9 +76,9 @@ anything else is a `400` with `{"message": "..."}`. The sender is the server's
 
 - **`site` is optional and selects the recipient.** Omit it and the mail goes to
   `CONTACT_TO`. Send it and the mail goes to `CONTACT_TO_<SITE>`, so one server
-  can host several sites' forms (`site: "ldg"` → `CONTACT_TO_LDG`). Site ids are
-  matched case-insensitively with non-alphanumerics as `_`, so `my-site` and
-  `my.site` both read `CONTACT_TO_MY_SITE`.
+  can host several sites' forms. Site ids are matched case-insensitively with
+  non-alphanumerics as `_`, so `my-site`, `My.Site` and `MY_SITE` all read
+  `CONTACT_TO_MY_SITE`.
 - **An unrecognized `site` is refused with `503`, never delivered to
   `CONTACT_TO`.** A typo'd or missing tenant config fails loudly (and logs a
   warning) instead of leaking one site's enquiries into another's inbox.

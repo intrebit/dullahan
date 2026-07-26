@@ -18,7 +18,7 @@ Server env vars:
 | `EMAIL_FROM` | no | — |
 | `EMAIL_FROM_NAME` | no | `dullahan` |
 | `CONTACT_TO` | no | (disables `/contact` for submissions that name no `site`) |
-| `CONTACT_TO_<SITE>` | no | (per-site recipient — `CONTACT_TO_LDG` serves `"site": "ldg"`; an unconfigured site gets a 503, never `CONTACT_TO`) |
+| `CONTACT_TO_<SITE>` | no | (per-site recipient — `CONTACT_TO_MY_SITE` serves `"site": "my-site"`; an unconfigured site gets a 503, never `CONTACT_TO`) |
 | `STATS_ORIGINS` | no | `*` (any origin) |
 | `BEHIND_TLS` | no | `false` (disables HSTS) |
 | `TRUST_PROXY_HEADERS` | no | `false` (use TCP peer IP for rate limiting/session hashing) |

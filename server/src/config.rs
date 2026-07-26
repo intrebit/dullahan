@@ -23,7 +23,7 @@ pub struct Config {
     /// submissions.
     pub contact_to: Option<String>,
     /// Per-tenant `/contact` recipients from `CONTACT_TO_<SITE>` env vars, keyed
-    /// by normalized site id (`CONTACT_TO_LDG` → `ldg`). A submission naming a
+    /// by normalized site id (`CONTACT_TO_MY_SITE` → `my_site`). A submission naming a
     /// site with no entry here is refused rather than delivered to
     /// `contact_to` — one tenant's enquiries must never land in another's inbox.
     pub contact_to_sites: HashMap<String, String>,
@@ -208,14 +208,14 @@ mod tests {
     fn env_prefix_builds_the_tenant_map() {
         let map = contact_sites_from(vars(&[
             ("CONTACT_TO", "default@example.com"),
-            ("CONTACT_TO_LDG", "booking@ldg.ie"),
+            ("CONTACT_TO_ACME", "forms@acme.test"),
             ("CONTACT_TO_MY_SITE", "hi@my-site.com"),
             ("CONTACT_TO_BLANK", "  "),
             ("CONTACT_TO_", "orphan@example.com"),
             ("DATABASE_URL", "postgres://x"),
         ]));
 
-        assert_eq!(map.get("ldg").map(String::as_str), Some("booking@ldg.ie"));
+        assert_eq!(map.get("acme").map(String::as_str), Some("forms@acme.test"));
         assert_eq!(
             map.get("my_site").map(String::as_str),
             Some("hi@my-site.com")
@@ -225,19 +225,19 @@ mod tests {
 
     #[test]
     fn tenant_gets_its_own_recipient() {
-        let cfg = config(Some("default@example.com"), &[("ldg", "booking@ldg.ie")]);
-        assert_eq!(cfg.contact_recipient(Some("ldg")), Some("booking@ldg.ie"));
+        let cfg = config(Some("default@example.com"), &[("acme", "forms@acme.test")]);
+        assert_eq!(cfg.contact_recipient(Some("acme")), Some("forms@acme.test"));
     }
 
     #[test]
     fn unknown_tenant_never_falls_back_to_the_default() {
-        let cfg = config(Some("default@example.com"), &[("ldg", "booking@ldg.ie")]);
+        let cfg = config(Some("default@example.com"), &[("acme", "forms@acme.test")]);
         assert_eq!(cfg.contact_recipient(Some("someone-else")), None);
     }
 
     #[test]
     fn no_tenant_named_uses_the_default() {
-        let cfg = config(Some("default@example.com"), &[("ldg", "booking@ldg.ie")]);
+        let cfg = config(Some("default@example.com"), &[("acme", "forms@acme.test")]);
         assert_eq!(cfg.contact_recipient(None), Some("default@example.com"));
         assert_eq!(config(None, &[]).contact_recipient(None), None);
     }
