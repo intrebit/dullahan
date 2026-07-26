@@ -264,14 +264,12 @@ pub struct Summary {
     pub top_path: Option<String>,
     #[serde(rename = "avgTimeOnPageMs", skip_serializing_if = "Option::is_none")]
     pub avg_time_on_page_ms: Option<f64>,
-    #[serde(rename = "medianTimeOnPageMs", skip_serializing_if = "Option::is_none")]
-    pub median_time_on_page_ms: Option<f64>,
-    #[serde(rename = "p75TimeOnPageMs", skip_serializing_if = "Option::is_none")]
-    pub p75_time_on_page_ms: Option<f64>,
-    /// Distinct visitor hashes (rung 2). `None` when sessions are disabled or
-    /// there is no session data in range.
-    #[serde(rename = "uniqueVisitors", skip_serializing_if = "Option::is_none")]
-    pub unique_visitors: Option<i64>,
+    /// Mean of the per-UTC-day unique-visitor counts (rung 2). Averaged per day
+    /// on purpose: the salt rotates daily, so a range-wide distinct count would
+    /// tally visitor-*days*, not people — this is the honest "typical day"
+    /// figure. `None` when sessions are disabled or there is no session data.
+    #[serde(rename = "avgDailyVisitors", skip_serializing_if = "Option::is_none")]
+    pub avg_daily_visitors: Option<f64>,
     /// Share (0–1) of sessions with a single pageview. `None` when sessions are
     /// disabled or there is no session data in range.
     #[serde(rename = "bounceRate", skip_serializing_if = "Option::is_none")]
@@ -293,10 +291,6 @@ pub struct TimeseriesPoint {
 pub struct TopRow {
     pub key: String,
     pub count: i64,
-    #[serde(rename = "avgDurMs", skip_serializing_if = "Option::is_none")]
-    pub avg_dur_ms: Option<f64>,
-    #[serde(rename = "medianDurMs", skip_serializing_if = "Option::is_none")]
-    pub median_dur_ms: Option<f64>,
 }
 
 /// Real-time active page-visits in the trailing `window_minutes`, keyed on the
@@ -330,8 +324,8 @@ pub struct SummaryChange {
     pub pageviews: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub events: Option<f64>,
-    #[serde(rename = "uniqueVisitors", skip_serializing_if = "Option::is_none")]
-    pub unique_visitors: Option<f64>,
+    #[serde(rename = "avgDailyVisitors", skip_serializing_if = "Option::is_none")]
+    pub avg_daily_visitors: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy)]

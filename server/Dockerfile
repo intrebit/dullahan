@@ -7,7 +7,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libs
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
-COPY assets ./assets
 COPY migrations ./migrations
 
 RUN cargo build --release --locked --bin dullahan

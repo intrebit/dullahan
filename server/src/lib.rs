@@ -41,9 +41,13 @@ pub mod contact;
 #[doc(hidden)]
 pub mod db;
 #[doc(hidden)]
+pub mod digest;
+#[doc(hidden)]
 pub mod email;
 #[doc(hidden)]
 pub mod ingest;
+#[doc(hidden)]
+pub mod products;
 #[doc(hidden)]
 pub mod salt;
 #[doc(hidden)]
@@ -62,7 +66,6 @@ use axum::Router;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
-use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum_prometheus::PrometheusMetricLayer;
 use sha2::{Digest, Sha256};
@@ -116,6 +119,31 @@ pub fn router(state: AppState) -> Router {
             .allow_origin(Any)
             .allow_methods([axum::http::Method::GET])
             .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE]),
+    };
+
+    // Public-read CORS for the product catalog so a storefront on another origin
+    // can fetch `/products` from the browser and ping `/products/:slug/view`.
+    // Mirrors `cors_stats` (allowlist from `product_origins`, or `Any` when unset
+    // or containing "*"), but is GET+POST only: PATCH/DELETE are deliberately
+    // absent so a browser can't preflight the admin writes, and only CONTENT_TYPE
+    // is allowed (not AUTHORIZATION), so cross-origin admin calls fail — the
+    // handlers stay admin-gated regardless. Published catalog data is public;
+    // drafts require admin and are not exposed by these reads.
+    let cors_products = match state.config.product_origins.as_ref() {
+        Some(origins) if !origins.is_empty() && !origins.iter().any(|o| o == "*") => {
+            let parsed: Vec<HeaderValue> = origins
+                .iter()
+                .filter_map(|o| HeaderValue::from_str(o).ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(parsed)
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_headers([header::CONTENT_TYPE])
+        }
+        _ => CorsLayer::new()
+            .allow_origin(Any)
+            .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+            .allow_headers([header::CONTENT_TYPE]),
     };
 
     let stats_routes = Router::new()
@@ -213,12 +241,26 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/posts/:key/view", post(blog::view));
 
+    // Product catalog. Same auth model as the blog (public reads, admin writes
+    // checked per-handler). `:key` is a slug on GET and an id on PATCH/DELETE —
+    // one capture name because axum/matchit reject differing names on a path.
+    let product_routes = Router::new()
+        .route("/products", get(products::list).post(products::create))
+        .route(
+            "/products/:key",
+            get(products::get_product)
+                .patch(products::update)
+                .delete(products::delete_product),
+        )
+        .route("/products/:key/view", post(products::view))
+        .layer(cors_products);
+
     let mut app = Router::new()
         .merge(public_routes)
         .route("/health", get(health))
-        .route("/pt.js", get(serve_script))
         .merge(stats_routes)
         .merge(blog_routes)
+        .merge(product_routes)
         .with_state(state.clone());
 
     // Security response headers (defense in depth — most are also useful when
@@ -321,24 +363,4 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 async fn health() -> &'static str {
     "ok"
-}
-
-/// The browser tracking client, vendored at `assets/pt.js` and compiled into the
-/// binary. Served so adopters can drop in a single
-/// `<script src="…/pt.js" data-site="…">` tag with no npm install or build step.
-/// Rebuild it from `tracker/` (`npm run build`) and re-commit `assets/pt.js` when
-/// the tracker changes; `include_str!` fails the build if it is missing.
-const SCRIPT_JS: &str = include_str!("../assets/pt.js");
-
-async fn serve_script() -> impl IntoResponse {
-    (
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/javascript; charset=utf-8",
-            ),
-            (header::CACHE_CONTROL, "public, max-age=86400"),
-        ],
-        SCRIPT_JS,
-    )
 }

@@ -27,12 +27,9 @@ ADMIN_TOKEN=$(openssl rand -hex 24) \
 dullahan
 ```
 
-It binds `0.0.0.0:3001`, applies its migrations, and starts serving. Add the
-tracker to your site — the script is baked into the binary, no npm:
-
-```html
-<script defer src="https://your-host/pt.js" data-site="my-site"></script>
-```
+It binds `0.0.0.0:3001`, applies its migrations, and starts serving. Point your
+site's browser tracker at its `/collect` endpoint — the tracker ships with your
+frontend (e.g. the storefront template), not with this binary.
 
 > Without `ADMIN_TOKEN`, stats reads and blog reads are **open to anyone**.
 > Blog writes are refused until a token is configured. Open reads are fine on a
@@ -44,10 +41,9 @@ A Docker image and a one-shot Debian/Ubuntu VM installer are in the repo.
 ## What's in the binary
 
 - **Analytics** — `/collect` ingest + a `/stats/*` read API. Cookie-free, no
-  fingerprinting, never stores a raw IP. Pageviews, web vitals, time-on-page,
-  custom events, funnels, sessions (opt-in).
-- **Tracker** — the browser script, baked in and served at `/pt.js`. No npm, no
-  build step, no separate package to keep in sync.
+  fingerprinting, never stores a raw IP. Pageviews, unique visitors, bounce,
+  time-on-page, top pages/referrers/countries/devices/campaigns, channels,
+  realtime, and custom events (sessions opt-in).
 - **Blog / content API** — `/posts` CRUD with an atomic per-post view counter.
   Stores raw Markdown; your frontend renders it.
 - **Contact** — `/contact` takes a form POST and emails it (via Resend).

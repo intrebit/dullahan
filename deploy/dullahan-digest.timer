@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the dullahan weekly digest every Sunday evening
+
+[Timer]
+# Sunday 18:00 in the given timezone (systemd v240+ supports the tz suffix;
+# drop it for the server's local/UTC time on older systemd).
+OnCalendar=Sun *-*-* 18:00:00 Europe/Dublin
+# Catch up if the machine was off at the scheduled time.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

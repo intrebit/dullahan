@@ -44,9 +44,11 @@ fn state_with_trust(
             contact_to: None,
             contact_to_sites: Default::default(),
             stats_origins: None,
+            product_origins: None,
             behind_tls: false,
             trust_proxy_headers,
             sessions_enabled,
+            shop_currency: "EUR".into(),
         }),
         pool,
         mailer: None,
@@ -601,7 +603,7 @@ async fn sessions_hash_honors_forwarded_for_when_trusted(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn summary_reports_unique_visitors_and_bounce_rate_when_enabled(pool: PgPool) {
+async fn summary_reports_avg_daily_visitors_and_bounce_rate_when_enabled(pool: PgPool) {
     let app = router(state_with(pool.clone(), None, None, true));
     let now_ms = chrono::Utc::now().timestamp_millis();
 
@@ -636,7 +638,8 @@ async fn summary_reports_unique_visitors_and_bounce_rate_when_enabled(pool: PgPo
         .await
         .unwrap();
     let body = body_json(resp).await;
-    assert_eq!(body["uniqueVisitors"], 2);
+    // Two visitors on one day → average daily visitors is 2.
+    assert_eq!(body["avgDailyVisitors"], 2.0);
     assert_eq!(body["bounceRate"], 0.5);
 }
 
@@ -660,7 +663,7 @@ async fn summary_omits_session_metrics_when_disabled(pool: PgPool) {
         .await
         .unwrap();
     let body = body_json(resp).await;
-    assert!(body.get("uniqueVisitors").is_none(), "got {body}");
+    assert!(body.get("avgDailyVisitors").is_none(), "got {body}");
     assert!(body.get("bounceRate").is_none(), "got {body}");
 }
 
@@ -869,7 +872,7 @@ async fn collect_clamps_absurd_future_ts(pool: PgPool) {
 // ---- Tier 1 metrics ----
 
 #[sqlx::test]
-async fn summary_reports_time_on_page_percentiles(pool: PgPool) {
+async fn summary_reports_avg_time_on_page(pool: PgPool) {
     let app = router(test_state(pool.clone(), None, None));
     let now = chrono::Utc::now().timestamp_millis();
     for dur in [1000, 2000, 3000] {
@@ -891,8 +894,8 @@ async fn summary_reports_time_on_page_percentiles(pool: PgPool) {
         .await
         .unwrap();
     let body = body_json(resp).await;
-    assert_eq!(body["medianTimeOnPageMs"], 2000.0, "got {body}");
-    assert!(body["p75TimeOnPageMs"].as_f64().unwrap() >= 2000.0);
+    // Mean of 1000/2000/3000 ms.
+    assert_eq!(body["avgTimeOnPageMs"], 2000.0, "got {body}");
 }
 
 #[sqlx::test]
@@ -1153,10 +1156,6 @@ async fn realtime_excludes_rows_outside_window(pool: PgPool) {
     );
 }
 
-// ---- Tier 3 metrics (sessions) ----
-
-// ---- Tier 3b metrics (funnels) ----
-
 #[sqlx::test]
 async fn collect_coerces_unknown_device_to_null(pool: PgPool) {
     // A bad device value used to fail the DB CHECK and silently drop the whole
@@ -1259,9 +1258,11 @@ async fn stats_cors_accepts_wildcard_origin(pool: PgPool) {
             contact_to: None,
             contact_to_sites: Default::default(),
             stats_origins: Some(vec!["*".into()]),
+            product_origins: None,
             behind_tls: false,
             trust_proxy_headers: false,
             sessions_enabled: false,
+            shop_currency: "EUR".into(),
         }),
         pool,
         mailer: None,
