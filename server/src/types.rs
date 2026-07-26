@@ -16,8 +16,6 @@ pub enum RawPayload {
         #[serde(default)]
         d: Option<String>,
         #[serde(default)]
-        v: Option<i32>,
-        #[serde(default)]
         u: Option<Utm>,
         #[serde(default)]
         vid: Option<String>,
@@ -30,15 +28,6 @@ pub enum RawPayload {
         n: String,
         #[serde(default)]
         pr: Option<HashMap<String, serde_json::Value>>,
-        #[serde(default)]
-        vid: Option<String>,
-    },
-    #[serde(rename = "performance")]
-    Performance {
-        s: String,
-        p: String,
-        ts: i64,
-        pf: PerformanceMetrics,
         #[serde(default)]
         vid: Option<String>,
     },
@@ -94,7 +83,6 @@ impl RawPayload {
         let path = match self {
             RawPayload::Pageview { p, .. }
             | RawPayload::Pageleave { p, .. }
-            | RawPayload::Performance { p, .. }
             | RawPayload::Event { p, .. } => p.as_str(),
         };
         if path.is_empty() || path.len() > MAX_PATH {
@@ -129,7 +117,6 @@ impl RawPayload {
         match self {
             RawPayload::Pageview { vid, .. }
             | RawPayload::Event { vid, .. }
-            | RawPayload::Performance { vid, .. }
             | RawPayload::Pageleave { vid, .. } => {
                 if vid.as_deref() == Some("") {
                     *vid = None;
@@ -163,22 +150,6 @@ impl RawPayload {
                 }
             }
         }
-        if let RawPayload::Performance { pf, .. } = self {
-            // Postgres percentile_cont chokes on NaN; drop non-finite values.
-            for v in [
-                &mut pf.lcp,
-                &mut pf.fcp,
-                &mut pf.cls,
-                &mut pf.inp,
-                &mut pf.ttfb,
-            ] {
-                if let Some(x) = *v
-                    && !x.is_finite()
-                {
-                    *v = None;
-                }
-            }
-        }
         Ok(())
     }
 
@@ -186,7 +157,6 @@ impl RawPayload {
         match self {
             RawPayload::Pageview { s, .. }
             | RawPayload::Event { s, .. }
-            | RawPayload::Performance { s, .. }
             | RawPayload::Pageleave { s, .. } => s,
         }
     }
@@ -195,7 +165,6 @@ impl RawPayload {
         match self {
             RawPayload::Pageview { vid, .. }
             | RawPayload::Event { vid, .. }
-            | RawPayload::Performance { vid, .. }
             | RawPayload::Pageleave { vid, .. } => vid.as_deref(),
         }
     }
@@ -205,7 +174,6 @@ impl RawPayload {
         let ts = match self {
             RawPayload::Pageview { ts, .. }
             | RawPayload::Event { ts, .. }
-            | RawPayload::Performance { ts, .. }
             | RawPayload::Pageleave { ts, .. } => ts,
         };
         *ts = (*ts).clamp(now_ms - TS_MAX_PAST_MS, now_ms + TS_MAX_FUTURE_MS);
@@ -223,7 +191,6 @@ mod tests {
             ts: 0,
             r: None,
             d: None,
-            v: None,
             u: None,
             vid: None,
         }
@@ -288,46 +255,6 @@ mod tests {
         };
         assert!(p.validate().is_err());
     }
-
-    #[test]
-    fn drops_non_finite_metrics() {
-        let mut p = RawPayload::Performance {
-            s: "s".into(),
-            p: "/".into(),
-            ts: 0,
-            pf: PerformanceMetrics {
-                lcp: Some(f64::NAN),
-                fcp: Some(f64::INFINITY),
-                cls: Some(0.1),
-                inp: Some(f64::NEG_INFINITY),
-                ttfb: None,
-            },
-            vid: None,
-        };
-        p.validate().unwrap();
-        if let RawPayload::Performance { pf, .. } = p {
-            assert!(pf.lcp.is_none());
-            assert!(pf.fcp.is_none());
-            assert_eq!(pf.cls, Some(0.1));
-            assert!(pf.inp.is_none());
-        } else {
-            panic!()
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct PerformanceMetrics {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lcp: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fcp: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cls: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inp: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ttfb: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -372,81 +299,6 @@ pub struct TopRow {
     pub median_dur_ms: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
-pub struct Vitals {
-    #[serde(rename = "lcpP75", skip_serializing_if = "Option::is_none")]
-    pub lcp_p75: Option<f64>,
-    #[serde(rename = "fcpP75", skip_serializing_if = "Option::is_none")]
-    pub fcp_p75: Option<f64>,
-    #[serde(rename = "clsP75", skip_serializing_if = "Option::is_none")]
-    pub cls_p75: Option<f64>,
-    #[serde(rename = "inpP75", skip_serializing_if = "Option::is_none")]
-    pub inp_p75: Option<f64>,
-    #[serde(rename = "ttfbP75", skip_serializing_if = "Option::is_none")]
-    pub ttfb_p75: Option<f64>,
-    /// Core-Web-Vitals pass-rate buckets (good / needs-improvement / poor) per
-    /// metric, against Google's thresholds. `None` when there is no perf data.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub distribution: Option<VitalsDistribution>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct VitalsDistribution {
-    pub lcp: MetricBucket,
-    pub fcp: MetricBucket,
-    pub cls: MetricBucket,
-    pub inp: MetricBucket,
-    pub ttfb: MetricBucket,
-}
-
-/// Sample counts for one metric. `needsImprovement = total - good - poor`.
-#[derive(Debug, Clone, Serialize)]
-pub struct MetricBucket {
-    pub good: i64,
-    #[serde(rename = "needsImprovement")]
-    pub needs_improvement: i64,
-    pub poor: i64,
-    pub total: i64,
-}
-
-/// Per-path vitals breakdown (`/stats/vitals?dim=path`). Each metric carries its
-/// own sample count because coverage varies — INP only exists on rows with an
-/// interaction, so its `n` is typically far below `samples`.
-#[derive(Debug, Clone, Serialize)]
-pub struct VitalsRow {
-    pub key: String,
-    pub samples: i64,
-    #[serde(rename = "lcpP75", skip_serializing_if = "Option::is_none")]
-    pub lcp_p75: Option<f64>,
-    #[serde(rename = "lcpN")]
-    pub lcp_n: i64,
-    #[serde(rename = "fcpP75", skip_serializing_if = "Option::is_none")]
-    pub fcp_p75: Option<f64>,
-    #[serde(rename = "fcpN")]
-    pub fcp_n: i64,
-    #[serde(rename = "clsP75", skip_serializing_if = "Option::is_none")]
-    pub cls_p75: Option<f64>,
-    #[serde(rename = "clsN")]
-    pub cls_n: i64,
-    #[serde(rename = "inpP75", skip_serializing_if = "Option::is_none")]
-    pub inp_p75: Option<f64>,
-    #[serde(rename = "inpN")]
-    pub inp_n: i64,
-    #[serde(rename = "ttfbP75", skip_serializing_if = "Option::is_none")]
-    pub ttfb_p75: Option<f64>,
-    #[serde(rename = "ttfbN")]
-    pub ttfb_n: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct HeatmapCell {
-    /// ISO weekday: 1 = Monday … 7 = Sunday.
-    pub weekday: i32,
-    /// Hour of day 0–23, in the requested timezone.
-    pub hour: i32,
-    pub pageviews: i64,
-}
-
 /// Real-time active page-visits in the trailing `window_minutes`, keyed on the
 /// server `received_at` (not the client `ts`). `active` = distinct `view_id`
 /// with any event in the window; `pages` is the top active paths.
@@ -456,90 +308,6 @@ pub struct Realtime {
     #[serde(rename = "windowMinutes")]
     pub window_minutes: i64,
     pub pages: Vec<TopRow>,
-}
-
-/// Per-page-visit engagement (site-wide). Rates are a fraction 0–1. Scroll /
-/// outbound metrics are `None` when the site emitted no such rows in range —
-/// scroll/outbound tracking is a client opt-in, so absence means "not measured",
-/// never "0% engaged".
-#[derive(Debug, Clone, Serialize)]
-pub struct Engagement {
-    /// Distinct page-visits (a `view_id` with a pageview) in range.
-    pub visits: i64,
-    /// Share of visits that were engaged: visible ≥10s OR scrolled ≥50% OR an
-    /// outbound/download click. A lower bound when scroll/outbound tracking is
-    /// off (it then rests on the time signal alone).
-    #[serde(rename = "engagedVisitRate", skip_serializing_if = "Option::is_none")]
-    pub engaged_visit_rate: Option<f64>,
-    /// Mean custom `track()` events per visit (auto scroll/outbound/download
-    /// excluded).
-    #[serde(rename = "avgEventsPerVisit", skip_serializing_if = "Option::is_none")]
-    pub avg_events_per_visit: Option<f64>,
-    /// Share of visits whose deepest scroll reached ≥75%.
-    #[serde(rename = "scrollReach75", skip_serializing_if = "Option::is_none")]
-    pub scroll_reach_75: Option<f64>,
-    /// Share of visits with at least one outbound-link click.
-    #[serde(rename = "outboundRate", skip_serializing_if = "Option::is_none")]
-    pub outbound_rate: Option<f64>,
-    /// Share of visits reaching each scroll milestone (a visit reaching 100%
-    /// counts in every lower bucket too).
-    #[serde(rename = "scrollFunnel", skip_serializing_if = "Option::is_none")]
-    pub scroll_funnel: Option<ScrollFunnel>,
-}
-
-/// Fraction of visits (0–1) reaching each scroll-depth milestone.
-#[derive(Debug, Clone, Serialize)]
-pub struct ScrollFunnel {
-    #[serde(rename = "25")]
-    pub p25: f64,
-    #[serde(rename = "50")]
-    pub p50: f64,
-    #[serde(rename = "75")]
-    pub p75: f64,
-    #[serde(rename = "100")]
-    pub p100: f64,
-}
-
-/// Per-path engagement row (`/stats/engagement?dim=path`). Each row exists only
-/// for paths with ≥1 visit, so `engagedVisitRate` / `avgEventsPerVisit` are
-/// always present; scroll / outbound rates follow the same opt-in omission rule
-/// as the site-wide object (gated on whether the *site* tracks them at all).
-#[derive(Debug, Clone, Serialize)]
-pub struct EngagementRow {
-    pub key: String,
-    pub visits: i64,
-    #[serde(rename = "engagedVisitRate")]
-    pub engaged_visit_rate: f64,
-    #[serde(rename = "avgEventsPerVisit")]
-    pub avg_events_per_visit: f64,
-    #[serde(rename = "scrollReach75", skip_serializing_if = "Option::is_none")]
-    pub scroll_reach_75: Option<f64>,
-    #[serde(rename = "outboundRate", skip_serializing_if = "Option::is_none")]
-    pub outbound_rate: Option<f64>,
-}
-
-/// Session-grain aggregates (`/stats/sessions`). A session is a run of one
-/// `visitor_hash`'s pageviews with no gap longer than the requested window;
-/// sessions exist only within a UTC day (the salt rotates daily). All rates are
-/// `None` when there are no sessions in range (sessions disabled or no data).
-#[derive(Debug, Clone, Serialize)]
-pub struct Sessions {
-    pub sessions: i64,
-    #[serde(rename = "avgPagesPerSession", skip_serializing_if = "Option::is_none")]
-    pub avg_pages_per_session: Option<f64>,
-    #[serde(
-        rename = "medianPagesPerSession",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub median_pages_per_session: Option<f64>,
-    #[serde(rename = "avgDurationMs", skip_serializing_if = "Option::is_none")]
-    pub avg_duration_ms: Option<f64>,
-    #[serde(rename = "medianDurationMs", skip_serializing_if = "Option::is_none")]
-    pub median_duration_ms: Option<f64>,
-    /// Share of sessions with a single pageview. Distinct from
-    /// `summary.bounceRate`, which is single-pageview visitor-*days*.
-    #[serde(rename = "bounceRate", skip_serializing_if = "Option::is_none")]
-    pub bounce_rate: Option<f64>,
 }
 
 /// `summary` wrapper for `compare=prev`. Flattens the current-window summary so
@@ -575,9 +343,6 @@ pub enum TopDimension {
     UtmSource,
     UtmMedium,
     UtmCampaign,
-    Browser,
-    Os,
-    Viewport,
 }
 
 impl TopDimension {
@@ -590,9 +355,6 @@ impl TopDimension {
             "utm_source" => Some(Self::UtmSource),
             "utm_medium" => Some(Self::UtmMedium),
             "utm_campaign" => Some(Self::UtmCampaign),
-            "browser" => Some(Self::Browser),
-            "os" => Some(Self::Os),
-            "viewport" => Some(Self::Viewport),
             _ => None,
         }
     }
@@ -606,38 +368,6 @@ impl TopDimension {
             Self::UtmSource => "utm_source",
             Self::UtmMedium => "utm_medium",
             Self::UtmCampaign => "utm_campaign",
-            Self::Browser => "browser",
-            Self::Os => "os",
-            // viewport is an int column; the generic `top` query reads `key` as
-            // text, so cast here (fixed allowlisted string — never user input).
-            Self::Viewport => "viewport::text",
         }
     }
-}
-
-/// An ordered path funnel (`/stats/funnel`). Each step reports how many sessions
-/// reached it **in time order** within a session, plus conversion rates.
-#[derive(Debug, Clone, Serialize)]
-pub struct Funnel {
-    pub steps: Vec<FunnelStep>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct FunnelStep {
-    /// 1-based position in the funnel.
-    pub step: i32,
-    /// The step's pageview path.
-    pub key: String,
-    /// Sessions that reached this step in order.
-    pub sessions: i64,
-    /// `sessions[i] / sessions[i-1]`. `1.0` for step 1; `None` if the previous
-    /// step has 0 sessions.
-    #[serde(rename = "conversionFromPrev", skip_serializing_if = "Option::is_none")]
-    pub conversion_from_prev: Option<f64>,
-    /// `sessions[i] / sessions[1]`. `None` if step 1 has 0 sessions.
-    #[serde(
-        rename = "conversionFromStart",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub conversion_from_start: Option<f64>,
 }

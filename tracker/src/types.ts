@@ -3,8 +3,6 @@ export interface AnalyticsConfig {
   siteId: string
   autoTrack?: boolean
   respectDNT?: boolean
-  trackScroll?: boolean
-  trackOutboundLinks?: boolean
 }
 
 export interface Campaign {
@@ -13,15 +11,7 @@ export interface Campaign {
   c?: string
 }
 
-export type EventType = 'pageview' | 'event' | 'performance' | 'pageleave'
-
-export type PerformanceMetrics = {
-  lcp?: number
-  fcp?: number
-  cls?: number
-  inp?: number
-  ttfb?: number
-}
+export type EventType = 'pageview' | 'event' | 'pageleave'
 
 /** Fields present on every event regardless of type. */
 interface BasePayload {
@@ -39,7 +29,6 @@ export interface PageviewPayload extends BasePayload {
   t: 'pageview'
   r?: string
   d?: 'mobile' | 'tablet' | 'desktop'
-  v?: number
   u?: Campaign
 }
 
@@ -47,11 +36,6 @@ export interface EventPayload extends BasePayload {
   t: 'event'
   n: string
   pr?: Record<string, unknown>
-}
-
-export interface PerformancePayload extends BasePayload {
-  t: 'performance'
-  pf: PerformanceMetrics
 }
 
 export interface PageleavePayload extends BasePayload {
@@ -68,7 +52,6 @@ export interface PageleavePayload extends BasePayload {
 export type Payload =
   | PageviewPayload
   | EventPayload
-  | PerformancePayload
   | PageleavePayload
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown

@@ -6,8 +6,8 @@
 //   <script defer src="https://analytics.example.com/pt.js" data-site="my-site"></script>
 //
 // data-endpoint defaults to /collect on the origin that served this script.
-// Boolean opt-ins: data-track-scroll, data-track-outbound, data-respect-dnt.
-// data-auto-track="false" disables automatic pageviews.
+// Boolean opt-in: data-respect-dnt. data-auto-track="false" disables automatic
+// pageviews.
 import { Analytics } from './index'
 
 interface DullahanGlobal {
@@ -42,8 +42,6 @@ try {
       autoTrack:
         el.dataset.autoTrack === undefined ? undefined : el.dataset.autoTrack !== 'false',
       respectDNT: flag(el, 'respectDnt'),
-      trackScroll: flag(el, 'trackScroll'),
-      trackOutboundLinks: flag(el, 'trackOutbound'),
     })
 
     const w = window as unknown as { dullahan?: DullahanGlobal }

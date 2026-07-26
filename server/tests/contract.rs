@@ -36,13 +36,6 @@ fn event_fixture_round_trips() {
 }
 
 #[test]
-fn performance_fixture_round_trips() {
-    let mut p = parse(fixture!("performance.json"));
-    assert!(matches!(p, RawPayload::Performance { .. }));
-    p.validate().expect("valid performance");
-}
-
-#[test]
 fn pageleave_fixture_round_trips() {
     let mut p = parse(fixture!("pageleave.json"));
     assert!(matches!(p, RawPayload::Pageleave { .. }));

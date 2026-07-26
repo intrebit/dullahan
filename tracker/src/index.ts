@@ -1,18 +1,14 @@
-import type { AnalyticsConfig, Payload, PayloadInput, PerformanceMetrics } from './types'
+import type { AnalyticsConfig, Payload, PayloadInput } from './types'
 import { checkDNT } from './privacy'
 import { sendPayload } from './transport'
 import {
   buildPageViewPayload,
   buildEventPayload,
-  buildPerformancePayload,
   buildPageLeavePayload,
   getPath,
 } from './payload'
 import { startAutoTracking } from './collect'
-import { startPerformanceTracking } from './performance'
 import { startEngagement, type Engagement } from './engagement'
-import { startScrollTracking, type ScrollTracker } from './scroll'
-import { startClickTracking } from './clicks'
 
 export type {
   AnalyticsConfig,
@@ -20,9 +16,7 @@ export type {
   PayloadInput,
   PageviewPayload,
   EventPayload,
-  PerformancePayload,
   PageleavePayload,
-  PerformanceMetrics,
 } from './types'
 
 const INSTANCE_KEY = '__dullahan_active__'
@@ -41,7 +35,6 @@ export class Analytics {
   private cleanups: (() => void)[] = []
   private stopped = false
   private engagement: Engagement | null = null
-  private scroll: ScrollTracker | null = null
   private currentViewId = ''
   private lastViewPath = ''
   private lastViewTime = 0
@@ -59,8 +52,6 @@ export class Analytics {
       siteId: config.siteId,
       autoTrack: config.autoTrack ?? true,
       respectDNT: config.respectDNT ?? false,
-      trackScroll: config.trackScroll ?? false,
-      trackOutboundLinks: config.trackOutboundLinks ?? false,
     }
 
     if (this.config.respectDNT && checkDNT()) {
@@ -89,15 +80,11 @@ export class Analytics {
     if (this.config.autoTrack) {
       this._startAutoTracking()
     }
-
-    this._startPerformanceTracking()
   }
 
   private _send(payload: PayloadInput): void {
     if (this.stopped) return
     const full = { ...payload, s: this.config.siteId } as Payload
-    // A payload may carry an explicit vid (performance metrics pin the view
-    // they measured); only fall back to the live view id when it doesn't.
     if (full.vid === undefined && this.currentViewId) full.vid = this.currentViewId
     sendPayload(full, this.config.endpoint)
   }
@@ -109,26 +96,6 @@ export class Analytics {
     this.engagement = eng
     this.cleanups.push(() => eng.stop())
 
-    const ensureScrollTracking = () => {
-      if (!this.config.trackScroll) return
-      if (this.scroll) {
-        this.scroll.reset()
-        return
-      }
-      const scroll = startScrollTracking((pct) => {
-        this._send(buildEventPayload('scroll_depth', { pct }))
-      })
-      this.scroll = scroll
-      this.cleanups.push(() => scroll.stop())
-    }
-
-    if (this.config.trackOutboundLinks) {
-      const clicks = startClickTracking((name, props) => {
-        this._send(buildEventPayload(name, props))
-      })
-      this.cleanups.push(() => clicks.stop())
-    }
-
     const fireView = (path?: string) => {
       const next = path ?? getPath()
       const now = Date.now()
@@ -139,7 +106,6 @@ export class Analytics {
       this.currentViewId = newViewId()
       this._send(buildPageViewPayload(next))
       eng.reset(next)
-      ensureScrollTracking()
     }
     this.cleanups.push(startAutoTracking(() => fireView()))
 
@@ -168,24 +134,6 @@ export class Analytics {
     }
   }
 
-  private _startPerformanceTracking(): void {
-    // Web-vitals flush asynchronously (a 15s timeout or the first tab-hide),
-    // potentially long after an SPA navigation has regenerated currentViewId.
-    // Pin the view id and path of the pageload being measured now so the
-    // metrics aren't misattributed to a later page-visit.
-    const viewId = this.currentViewId
-    const path = getPath()
-    const send = (metrics: PerformanceMetrics) => {
-      const payload = buildPerformancePayload(metrics)
-      if (viewId) {
-        payload.vid = viewId
-        payload.p = path
-      }
-      this._send(payload)
-    }
-    this.cleanups.push(startPerformanceTracking(send))
-  }
-
   /** Track a custom event. */
   track(name: string, props?: Record<string, unknown>): void {
     if (this.stopped) return
@@ -204,7 +152,6 @@ export class Analytics {
     this.currentViewId = newViewId()
     this._send(buildPageViewPayload(next))
     this.engagement?.reset(next)
-    this.scroll?.reset()
   }
 
   /** Stop all tracking and clean up observers. */
@@ -216,6 +163,5 @@ export class Analytics {
     }
     this.cleanups = []
     this.engagement = null
-    this.scroll = null
   }
 }

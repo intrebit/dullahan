@@ -33,15 +33,15 @@ pub async fn collect(
         .map(|c| c.to_ascii_uppercase());
 
     // Rung 2 enrichment (opt-in). With sessions disabled this handler reads
-    // neither the User-Agent nor the selected client IP for analytics.
-    let (visitor_hash, browser, os) = if state.config.sessions_enabled {
+    // neither the User-Agent nor the selected client IP for analytics. When
+    // enabled, the UA feeds the salted daily hash only — it is never stored.
+    let visitor_hash = if state.config.sessions_enabled {
         let ua = headers
             .get("user-agent")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        let (browser, os) = crate::ua::parse_ua(ua);
         let peer_ip = peer.map(|ConnectInfo(addr)| addr.ip());
-        let visitor_hash = match crate::client_ip::select_client_ip(
+        match crate::client_ip::select_client_ip(
             &headers,
             peer_ip,
             state.config.trust_proxy_headers,
@@ -62,23 +62,16 @@ pub async fn collect(
                 }
             }
             None => None,
-        };
-        (visitor_hash, browser, os)
+        }
     } else {
-        (None, None, None)
+        None
     };
 
     let pool = state.pool.clone();
     tokio::spawn(async move {
-        if let Err(err) = crate::db::insert_event(
-            &pool,
-            &payload,
-            country.as_deref(),
-            visitor_hash.as_deref(),
-            browser.as_deref(),
-            os.as_deref(),
-        )
-        .await
+        if let Err(err) =
+            crate::db::insert_event(&pool, &payload, country.as_deref(), visitor_hash.as_deref())
+                .await
         {
             // Ingest is fire-and-forget (202 already returned), so a failed insert
             // is otherwise invisible. Count it so silent data loss is alertable.

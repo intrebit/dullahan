@@ -25,10 +25,6 @@ export function getDeviceClass(w: number): 'mobile' | 'tablet' | 'desktop' {
   return 'desktop'
 }
 
-export function roundViewportWidth(w: number): number {
-  return Math.round(w / 10) * 10
-}
-
 const UTM_MAX = 128
 
 export function extractCampaign(search: string): Campaign | undefined {
