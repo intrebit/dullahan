@@ -23,6 +23,19 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let config = Config::from_env()?;
+
+    // `dullahan --digest` runs the weekly digest once and exits (driven by a
+    // systemd timer). `--dry-run` prints each email instead of sending it.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--digest") {
+        let dry_run = args.iter().any(|a| a == "--dry-run");
+        let pool = db::connect(&config.database_url).await?;
+        let mailer = config.email.clone().map(Mailer::new);
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        dullahan::digest::run(&pool, mailer.as_ref(), &config, now_ms, dry_run).await?;
+        return Ok(());
+    }
+
     tracing::info!(addr = %config.bind_addr, "starting dullahan");
 
     if config.admin_token.is_none() {
