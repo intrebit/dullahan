@@ -1,4 +1,5 @@
-//! The admin-gated `/stats/*` read API (summary, top, timeseries, vitals, …).
+//! The admin-gated `/stats/*` read API (summary, timeseries, top, events,
+//! channels, realtime).
 
 use crate::state::AppState;
 use crate::types::{SummaryChange, SummaryResponse, TopDimension};
@@ -113,8 +114,8 @@ pub async fn summary(
         let change = SummaryChange {
             pageviews: pct_change(current.pageviews, prev.pageviews),
             events: pct_change(current.events, prev.events),
-            unique_visitors: match (current.unique_visitors, prev.unique_visitors) {
-                (Some(c), Some(p)) => pct_change(c, p),
+            avg_daily_visitors: match (current.avg_daily_visitors, prev.avg_daily_visitors) {
+                (Some(c), Some(p)) => pct_change_f64(c, p),
                 _ => None,
             },
         };
@@ -136,6 +137,14 @@ fn pct_change(current: i64, previous: i64) -> Option<f64> {
         return None;
     }
     Some((current - previous) as f64 / previous as f64 * 100.0)
+}
+
+/// Percentage change for fractional metrics (e.g. avg daily visitors).
+fn pct_change_f64(current: f64, previous: f64) -> Option<f64> {
+    if previous == 0.0 {
+        return None;
+    }
+    Some((current - previous) / previous * 100.0)
 }
 
 pub async fn timeseries(

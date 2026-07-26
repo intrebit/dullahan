@@ -86,67 +86,6 @@ jobs:
         # so rsa code is never linked into the runtime binary.
         run: cargo audit --ignore RUSTSEC-2023-0071
 
-  tracker:
-    name: tracker (vitest + vendored pt.js)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: tracker/package-lock.json
-      - working-directory: tracker
-        run: npm ci
-      - working-directory: tracker
-        run: npm run typecheck
-      - working-directory: tracker
-        run: npm test
-      - working-directory: tracker
-        run: npm run build
-      # Option A: the server compiles in server/assets/pt.js and serves it at
-      # /pt.js. Fail if the committed asset has drifted from a fresh build.
-      - name: vendored pt.js is fresh
-        run: diff -q tracker/dist/pt.js server/assets/pt.js
-
-  e2e:
-    name: e2e (playwright)
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: dullahan_e2e
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/dullahan_e2e
-      CI: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: server
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: install e2e deps
-        working-directory: e2e
-        run: npm ci
-      - name: install playwright chromium
-        working-directory: e2e
-        run: npx playwright install --with-deps chromium
-      - name: run e2e
-        working-directory: e2e
-        run: npx playwright test
-
   docker:
     name: docker (build + smoke)
     runs-on: ubuntu-latest
@@ -167,7 +106,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build image
         run: docker build -t dullahan:ci ./server
-      - name: Run + smoke (/health, /pt.js)
+      - name: Run + smoke (/health)
         run: |
           docker run -d --name dullahan --network host \
             -e DATABASE_URL=postgres://postgres:postgres@localhost:5432/dullahan \
@@ -176,12 +115,10 @@ jobs:
             dullahan:ci
           for i in $(seq 1 30); do sleep 1; curl -fsS http://127.0.0.1:3001/health && break; done
           curl -fsS http://127.0.0.1:3001/health
-          # /pt.js must serve the real vendored tracker (the global is window.dullahan)
-          curl -fsS http://127.0.0.1:3001/pt.js | grep -q 'dullahan' && echo "pt.js OK"
           docker logs dullahan
           docker rm -f dullahan
 
-  # Push to master, all six gates green -> build a release binary here and install
+  # Push to master, all gates green -> build a release binary here and install
   # it on the server. The binary is the only artifact: sqlx::migrate! embeds the
   # migrations, so nothing else needs to travel.
   #
@@ -191,7 +128,7 @@ jobs:
   # setup is in docs/deploy.md.
   deploy:
     name: deploy (master -> server)
-    needs: [lint, server, tracker, audit, e2e, docker]
+    needs: [lint, server, audit, docker]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     # Pinned, not ubuntu-latest: the binary must run against the server's glibc,
     # so build on an image no newer than it. 22.04 ships glibc 2.35, old enough

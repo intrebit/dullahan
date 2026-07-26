@@ -32,6 +32,12 @@ pub struct Config {
     /// browser on any other origin can't read stats responses even if the
     /// admin token leaks into URL bar / page source.
     pub stats_origins: Option<Vec<String>>,
+    /// Allowed `Origin` values for public product reads (`GET /products` and the
+    /// `/products/:slug/view` ping) so a storefront on another origin can fetch
+    /// the catalog from the browser. Empty/unset = `*`: the published catalog is
+    /// public, so open by default (like `/collect`). Set to your storefront
+    /// origin(s) to restrict. Admin writes stay token-gated regardless.
+    pub product_origins: Option<Vec<String>>,
     /// `true` if the server is fronted by HTTPS (so HSTS is safe to send).
     /// The header is harmless on plain HTTP but pointless. Default false.
     pub behind_tls: bool,
@@ -44,6 +50,11 @@ pub struct Config {
     /// (raw IP never stored) and coarse browser/OS family. Default false:
     /// outside transient rate-limiter keying, no IP/UA analytics are derived.
     pub sessions_enabled: bool,
+    /// ISO-4217 currency for the product catalog (`/products`). Prices are
+    /// stored as integer minor units (`price_cents`) with no per-product
+    /// currency; this is the single shop-wide code echoed in each response so
+    /// the frontend can format. Default `EUR`. See `SHOP_CURRENCY`.
+    pub shop_currency: String,
 }
 
 #[derive(Clone, Debug)]
@@ -103,6 +114,13 @@ impl Config {
                 .collect()
         });
 
+        let product_origins = env::var("PRODUCT_ORIGINS").ok().map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        });
+
         let behind_tls = env::var("BEHIND_TLS")
             .ok()
             .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
@@ -118,6 +136,12 @@ impl Config {
             .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
 
+        let shop_currency = env::var("SHOP_CURRENCY")
+            .ok()
+            .map(|s| s.trim().to_ascii_uppercase())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "EUR".into());
+
         Ok(Self {
             bind_addr,
             database_url,
@@ -127,9 +151,11 @@ impl Config {
             contact_to,
             contact_to_sites: contact_sites_from(env::vars()),
             stats_origins,
+            product_origins,
             behind_tls,
             trust_proxy_headers,
             sessions_enabled,
+            shop_currency,
         })
     }
 
@@ -190,9 +216,11 @@ mod tests {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             stats_origins: None,
+            product_origins: None,
             behind_tls: false,
             trust_proxy_headers: false,
             sessions_enabled: false,
+            shop_currency: "EUR".into(),
         }
     }
 

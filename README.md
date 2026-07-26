@@ -5,14 +5,14 @@
 [![CI](https://github.com/intrebit/dullahan/actions/workflows/ci.yml/badge.svg)](https://github.com/intrebit/dullahan/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**The headless backend for your site.** A self-hosted, cookie-free Rust binary that gives a small site three things over plain HTTP: privacy-first **analytics**, a headless **blog/content API**, and a **contact** endpoint. It serves its own browser tracker at `/pt.js` — no separate package to install.
+**The headless backend for your site.** A self-hosted, cookie-free Rust binary that gives a small site three things over plain HTTP: privacy-first **analytics**, a headless **blog/content API**, and a **contact** endpoint. Pure Rust — your frontend's tracker POSTs events to its `/collect` endpoint (the reference tracker ships with the [storefront template](https://github.com/anfocic/storefront)).
 
 One Rust binary + a Postgres replaces a tracking SaaS, a headless CMS, and a contact-form service.
 
 ## What you get
 
 - **Analytics** — `/collect` ingest + a `/stats/*` read API: pageviews, unique visitors, bounce rate, time-on-page, top pages/referrers/countries/devices/campaigns, acquisition channels, real-time active visitors, and custom events/goals.
-- **Tracker** — a ~3 KB browser script, baked into the binary and served at `/pt.js`. One `<script>` tag, no npm, no build step.
+- **Provider-agnostic ingest** — `/collect` accepts a small JSON event shape any browser tracker can POST (open CORS). The reference ~3 KB tracker lives with the frontend, not in this binary.
 - **Blog / content API** — `/posts` CRUD with an atomic per-post view counter. Stores raw Markdown; your frontend renders it.
 - **Contact** — `/contact` takes a form POST and emails it (via Resend), with a per-site recipient so one server can host several sites' forms.
 - **Privacy by design** — no cookies, no fingerprinting, **no raw IP storage, ever**.
@@ -38,13 +38,7 @@ ADMIN_TOKEN=$(openssl rand -hex 24) \
 dullahan
 ```
 
-Migrations apply on startup; the server binds `0.0.0.0:3001`. Add the tracker to your site:
-
-```html
-<script defer src="https://analytics.example.com/pt.js" data-site="my-site"></script>
-```
-
-Then read your stats with the token:
+Migrations apply on startup; the server binds `0.0.0.0:3001`. Point your site's tracker at this server's `/collect` (the [storefront template](https://github.com/anfocic/storefront) does this from config), then read your stats with the token:
 
 ```bash
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -53,18 +47,17 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 > **Set `ADMIN_TOKEN` on any public deploy.** Without it, `/stats/*` and blog reads are open to anyone (blog writes are refused). The server logs a warning when it's unset.
 
-Tracker opt-ins and custom events are in [`tracker/README.md`](tracker/README.md); every endpoint — stats, blog, contact — is in [`docs/api.md`](docs/api.md).
+Every endpoint — stats, blog, contact, `/collect` — is in [`docs/api.md`](docs/api.md).
 
 ## Privacy
 
-No cookies, no fingerprinting, **no raw IP storage — ever.** The surface is deliberately lean: the tracker collects no web vitals, no scroll depth, and no outbound-link clicks, and the server never parses the User-Agent for analytics (no browser/OS/viewport columns). The server processes the client IP transiently for rate limiting; with sessions **off** (the default), `/collect` otherwise uses neither IP nor User-Agent. With sessions **on** (`SESSIONS_ENABLED=1`), the selected client IP + User-Agent are combined with a daily-rotating salt into an anonymized hash and immediately discarded (the UA is never stored); old salts are pruned on startup and periodically while the server runs, making historical hashes permanently unlinkable after retention. Consequences embraced on purpose: `uniqueVisitors` counts visitor-*days*, and new-vs-returning / retention / DAU-MAU are impossible and intentionally not built.
+No cookies, no fingerprinting, **no raw IP storage — ever.** The surface is deliberately lean: no web vitals, no scroll depth, and no outbound-link clicks are collected, and the server never parses the User-Agent for analytics (no browser/OS/viewport columns). The server processes the client IP transiently for rate limiting; with sessions **off** (the default), `/collect` otherwise uses neither IP nor User-Agent. With sessions **on** (`SESSIONS_ENABLED=1`), the selected client IP + User-Agent are combined with a daily-rotating salt into an anonymized hash and immediately discarded (the UA is never stored); old salts are pruned on startup and periodically while the server runs, making historical hashes permanently unlinkable after retention. Consequences embraced on purpose: a cross-day unique count is impossible, so `summary` reports **average daily visitors** rather than an inflated range-wide total, and new-vs-returning / retention / DAU-MAU are intentionally not built.
 
 ## Documentation
 
 | Doc | What |
 |---|---|
-| [`tracker/README.md`](tracker/README.md) | Browser SDK — script-tag attributes, opt-ins, custom events |
-| [`docs/api.md`](docs/api.md) | Full HTTP API reference — `/stats/*`, blog, what's collected |
+| [`docs/api.md`](docs/api.md) | Full HTTP API reference — `/stats/*`, blog, `/collect`, what's collected |
 | [`docs/deploy.md`](docs/deploy.md) | Configuration, self-host hardening, metrics, load testing |
 | [`AGENTS.md`](AGENTS.md) | Developer guide (build/test/lint, conventions, gotchas) |
 
