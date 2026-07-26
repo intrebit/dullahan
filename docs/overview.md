@@ -69,11 +69,12 @@ Design conventions that run through all of it:
 
 ## Privacy model
 
-- No cookies, no fingerprinting. **Raw IPs are never stored.** With sessions off
-  (default) the server reads neither IP nor User-Agent.
+- No cookies, no fingerprinting. **Raw IPs are never stored.** The server uses
+  the selected client IP transiently for rate limiting; with sessions off
+  (default), `/collect` otherwise uses neither IP nor User-Agent.
 - With sessions on, `(daily salt, site, IP, UA)` → a hash; the IP is discarded
-  immediately and the **salt is deleted after 48h**, making old hashes permanently
-  unlinkable.
+  immediately and old salts are pruned on startup and periodically while running,
+  making historical hashes permanently unlinkable after retention.
 - Consequences embraced on purpose: `uniqueVisitors` counts *visitor-days*;
   sessions can't cross **00:00 UTC**; and **new-vs-returning, retention, DAU/MAU
   are impossible — and intentionally not built.**

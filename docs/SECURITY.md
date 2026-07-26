@@ -31,10 +31,10 @@ Out of scope:
 
 - Always set `ADMIN_TOKEN` when exposing the server to the public internet. Without it, `/stats/*` is readable by anyone.
 - Restrict `ALLOWED_SITES` to the site IDs you actually own; otherwise anyone can write events with any `siteId`.
-- The `/collect` and `/contact` endpoints are intentionally unauthenticated — they accept input from browsers. The server enforces a 16 KB request-body cap **and** a built-in per-IP rate limit on both (`/collect` ~120/min burst 60, `/contact` ~5/min burst 3, keyed on `x-forwarded-for` / `x-real-ip` / TCP peer). `/contact` triggers an outbound email per request and is a prime abuse target, so for a hostile public deploy you **should** layer additional limits at your reverse proxy too.
+- The `/collect` and `/contact` endpoints are intentionally unauthenticated — they accept input from browsers. The server enforces a 16 KB request-body cap **and** a built-in per-IP rate limit on both (`/collect` ~120/min burst 60, `/contact` ~5/min burst 3). By default the limiter keys on TCP peer IP; set `TRUST_PROXY_HEADERS=1` only behind a trusted proxy to use `x-forwarded-for` / `x-real-ip`. `/contact` triggers an outbound email per request and is a prime abuse target, so for a hostile public deploy you **should** layer additional limits at your reverse proxy too.
 - Keep the server behind TLS (Caddy in `deploy/install.sh` does this automatically).
 - CORS on `/stats/*` is permissive (`*`) but Bearer-gated. If you only call it from a known backend, lock it down at the reverse proxy.
-- `SESSIONS_ENABLED` is **off by default**: the server processes neither the client IP nor the User-Agent. Turning it on enables anonymized sessions — the IP and User-Agent are hashed with a daily-rotating salt (raw IP never stored) and the salt is deleted after 48h, so historical hashes cannot be re-linked. If you enable it, make sure your reverse proxy sets a correct `x-forwarded-for` / `x-real-ip`, and confirm your privacy policy reflects the change.
+- `SESSIONS_ENABLED` is **off by default**: outside transient rate-limiter keying, `/collect` does not use the client IP and does not read the User-Agent. Turning it on enables anonymized sessions — the selected client IP and User-Agent are hashed with a daily-rotating salt (raw IP never stored) and old salts are pruned on startup and periodically while the server runs, so historical hashes cannot be re-linked after retention. If you enable it behind a proxy, set `TRUST_PROXY_HEADERS=1` and confirm your privacy policy reflects the change.
 
 ## Known advisories
 

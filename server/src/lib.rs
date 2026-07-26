@@ -31,6 +31,8 @@ pub mod blog;
 #[doc(hidden)]
 pub mod channels;
 #[doc(hidden)]
+pub mod client_ip;
+#[doc(hidden)]
 pub mod config;
 #[doc(hidden)]
 pub mod contact;
@@ -66,7 +68,6 @@ use axum_prometheus::PrometheusMetricLayer;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
-use tower_governor::key_extractor::SmartIpKeyExtractor;
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
@@ -141,7 +142,9 @@ pub fn router(state: AppState) -> Router {
         GovernorConfigBuilder::default()
             .per_millisecond(500)
             .burst_size(60)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(client_ip::ClientIpKeyExtractor::new(
+                state.config.trust_proxy_headers,
+            ))
             .finish()
             .expect("collect rate-limit config is valid"),
     );
@@ -164,7 +167,9 @@ pub fn router(state: AppState) -> Router {
         GovernorConfigBuilder::default()
             .per_second(12)
             .burst_size(3)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(client_ip::ClientIpKeyExtractor::new(
+                state.config.trust_proxy_headers,
+            ))
             .finish()
             .expect("contact rate-limit config is valid"),
     );

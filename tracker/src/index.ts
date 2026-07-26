@@ -109,7 +109,12 @@ export class Analytics {
     this.engagement = eng
     this.cleanups.push(() => eng.stop())
 
-    if (this.config.trackScroll) {
+    const ensureScrollTracking = () => {
+      if (!this.config.trackScroll) return
+      if (this.scroll) {
+        this.scroll.reset()
+        return
+      }
       const scroll = startScrollTracking((pct) => {
         this._send(buildEventPayload('scroll_depth', { pct }))
       })
@@ -134,7 +139,7 @@ export class Analytics {
       this.currentViewId = newViewId()
       this._send(buildPageViewPayload(next))
       eng.reset(next)
-      this.scroll?.reset()
+      ensureScrollTracking()
     }
     this.cleanups.push(startAutoTracking(() => fireView()))
 

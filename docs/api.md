@@ -38,7 +38,7 @@ GET /stats/funnel?site=my-site&days=30&steps=/,/pricing,/signup
 - **`sessions`** (requires `SESSIONS_ENABLED`) groups a visitor's pageviews into sessions split by a `gap` of inactivity (minutes, default 30, clamped 1–240) and returns `sessions`, `avg`/`medianPagesPerSession`, `avg`/`medianDurationMs`, and a session-level `bounceRate`. **`sessions?dim=entry`** / **`dim=exit`** return the top entry / exit pages. A single-pageview session has duration 0. Because the visitor-hash salt rotates at 00:00 UTC, **sessions never cross midnight UTC** (a visit spanning it splits in two) — the same constraint behind `uniqueVisitors`. This `bounceRate` is single-pageview *sessions*; `summary.bounceRate` is single-pageview visitor-*days* — the session figure is the standard one.
 - **`funnel`** (requires `SESSIONS_ENABLED`) takes `steps` — 2–10 comma-separated pageview paths — and reports, per step, how many sessions reached it **in order** (`sessions`), plus `conversionFromPrev` and `conversionFromStart`. Steps must occur in time order within a session (gap/`gap` as for `sessions`); a later step seen before its predecessor doesn't count. Example: `steps=/,/pricing,/signup`.
 
-> **Note on `uniqueVisitors`:** the visitor hash is salted with a salt that rotates every UTC day (and is then deleted), so the same person hashes differently each day. Over a multi-day range `uniqueVisitors` therefore counts *visitor-days*, not distinct people — a visitor active on N days counts as N. This is a deliberate consequence of the cookie-free, unlinkable-by-design model. For a per-day figure, query a 1-day range per day.
+> **Note on `uniqueVisitors`:** the visitor hash is salted with a salt that rotates every UTC day and is pruned after retention, so the same person hashes differently each day. Over a multi-day range `uniqueVisitors` therefore counts *visitor-days*, not distinct people — a visitor active on N days counts as N. This is a deliberate consequence of the cookie-free, unlinkable-by-design model. For a per-day figure, query a 1-day range per day.
 
 `top` dimensions: `path`, `referrer`, `country`, `device`, `viewport`, `utm_source`, `utm_medium`, `utm_campaign`, and (sessions only) `browser`, `os`.
 
@@ -72,6 +72,11 @@ Optional, only when `SESSIONS_ENABLED=1` (off by default):
 
 - Unique visitors, sessions, bounce rate
 - Browser + OS *family* (e.g. "Chrome / macOS", never versions)
+
+The selected client IP is processed transiently for rate limiting. It is never
+stored. Session hashing uses that same selected IP only when
+`SESSIONS_ENABLED=1`; behind a trusted proxy, set `TRUST_PROXY_HEADERS=1` to use
+`x-forwarded-for` / `x-real-ip` instead of the TCP peer.
 
 ## Avoiding PII leaks
 

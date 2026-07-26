@@ -1,6 +1,7 @@
 use dullahan::{config::Config, db, email::Mailer, router_with_metrics, state::AppState};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::signal;
 use tracing_subscriber::EnvFilter;
 
@@ -35,6 +36,21 @@ async fn main() -> anyhow::Result<()> {
 
     let pool = db::connect(&config.database_url).await?;
     db::migrate(&pool).await?;
+    dullahan::salt::prune_old_salts(&pool, chrono::Utc::now().date_naive()).await?;
+    {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60 * 60));
+            loop {
+                tick.tick().await;
+                if let Err(err) =
+                    dullahan::salt::prune_old_salts(&pool, chrono::Utc::now().date_naive()).await
+                {
+                    tracing::warn!(error = %err, "failed to prune old daily salts");
+                }
+            }
+        });
+    }
 
     let mailer = config.email.clone().map(Mailer::new);
 

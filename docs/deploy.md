@@ -20,7 +20,8 @@ Server env vars:
 | `CONTACT_TO` | no | (disables `/contact`) |
 | `STATS_ORIGINS` | no | `*` (any origin) |
 | `BEHIND_TLS` | no | `false` (disables HSTS) |
-| `SESSIONS_ENABLED` | no | `false` (no IP/UA processing; opt-in for unique visitors, sessions, bounce rate, browser/OS) |
+| `TRUST_PROXY_HEADERS` | no | `false` (use TCP peer IP for rate limiting/session hashing) |
+| `SESSIONS_ENABLED` | no | `false` (no session IP/UA processing; opt-in for unique visitors, sessions, bounce rate, browser/OS) |
 | `LOG_FORMAT` | no | `text` (set `json` for structured logs) |
 | `RUST_LOG` | no | `info,sqlx=warn` |
 
@@ -34,9 +35,9 @@ The defaults are safe for a private deploy. For a public-internet host:
 - **Set `ALLOWED_SITES`** if you only collect for known sites — otherwise any caller can write any `siteId` and bloat your DB.
 - **Set `STATS_ORIGINS`** to your dashboard origin so a browser elsewhere can't read `/stats/*` responses even if the admin token leaks.
 - **Set `BEHIND_TLS=1`** once the deploy is fronted by HTTPS so the server emits `Strict-Transport-Security`. The other security headers (`X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`) ship unconditionally.
-- **Rate limiting** is built in (per-IP, in-process): `/collect` allows ~120/min burst 60, `/contact` allows ~5/min burst 3. The server reads the client IP from `x-forwarded-for` / `x-real-ip` (with the TCP peer as fallback), so make sure your reverse proxy sets one of those. For a hostile public deploy, layer additional limits at Caddy/nginx.
+- **Rate limiting** is built in (per-IP, in-process): `/collect` allows ~120/min burst 60, `/contact` allows ~5/min burst 3. By default the server keys on the TCP peer IP and ignores spoofable forwarded headers. If it runs behind a trusted reverse proxy, set `TRUST_PROXY_HEADERS=1` so rate limiting and session hashing use `x-forwarded-for`, then `x-real-ip`, then the TCP peer. The bundled Caddy installer sets this because Caddy is the only public peer. For a hostile public deploy, layer additional limits at Caddy/nginx.
 - **Strip the `x-country` header at the proxy** before re-injecting it from a GeoIP lookup — the server trusts whatever the client sends if no proxy strips it.
-- **Watch your access logs.** The `/collect` body never stores IPs, but your reverse proxy and `tower-http` request traces likely log the client IP. Configure log retention / redaction to match your privacy posture.
+- **Watch your access logs.** The `/collect` body never stores IPs, but IPs are processed transiently for rate limiting, and your reverse proxy / request traces likely log them. Configure log retention / redaction to match your privacy posture.
 
 ## Metrics
 

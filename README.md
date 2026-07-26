@@ -46,7 +46,7 @@ The full copy-paste walkthrough — tracker opt-ins, custom events, blog, contac
 
 ## Privacy
 
-No cookies, no fingerprinting, **no raw IP storage — ever.** With sessions **off** (the default) the server reads neither the client IP nor the User-Agent. With sessions **on** (`SESSIONS_ENABLED=1`), the IP + User-Agent are combined with a daily-rotating salt into an anonymized hash and immediately discarded; the salt is deleted after 48h, making old hashes permanently unlinkable. Consequences embraced on purpose: `uniqueVisitors` counts visitor-*days*, sessions can't cross 00:00 UTC, and new-vs-returning / retention / DAU-MAU are impossible and intentionally not built.
+No cookies, no fingerprinting, **no raw IP storage — ever.** The server processes the client IP transiently for rate limiting; with sessions **off** (the default), `/collect` otherwise uses neither IP nor User-Agent. With sessions **on** (`SESSIONS_ENABLED=1`), the selected client IP + User-Agent are combined with a daily-rotating salt into an anonymized hash and immediately discarded; old salts are pruned on startup and periodically while the server runs, making historical hashes permanently unlinkable after retention. Consequences embraced on purpose: `uniqueVisitors` counts visitor-*days*, sessions can't cross 00:00 UTC, and new-vs-returning / retention / DAU-MAU are impossible and intentionally not built.
 
 ## Documentation
 

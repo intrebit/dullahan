@@ -11,6 +11,17 @@ async function getPayloadFromCall(
   return JSON.parse(await blob.text())
 }
 
+function setScrollDims(scrollHeight: number, innerHeight: number, scrollY: number) {
+  for (const prop of ['scrollHeight', 'offsetHeight'] as const) {
+    Object.defineProperty(document.documentElement, prop, {
+      value: scrollHeight,
+      configurable: true,
+    })
+  }
+  Object.defineProperty(window, 'innerHeight', { value: innerHeight, configurable: true })
+  Object.defineProperty(window, 'scrollY', { value: scrollY, configurable: true })
+}
+
 describe('Analytics', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
@@ -335,6 +346,28 @@ describe('Analytics', () => {
 
       a.stop()
       vi.useRealTimers()
+    })
+
+    it('stamps initial short-page scroll events with the current vid', async () => {
+      setScrollDims(800, 1000, 0)
+      const spy = vi.spyOn(navigator, 'sendBeacon').mockReturnValue(true)
+      const a = new Analytics({
+        endpoint: ENDPOINT,
+        siteId: SITE_ID,
+        autoTrack: true,
+        trackScroll: true,
+      })
+
+      const all = await Promise.all(spy.mock.calls.map((c) => getPayloadFromCall(c)))
+      const pv = all.find((p) => p.t === 'pageview')!
+      const scrolls = all.filter((p) => p.t === 'event' && p.n === 'scroll_depth')
+
+      expect(pv.vid).toBeTruthy()
+      expect(scrolls.map((p) => (p.pr as { pct: number }).pct)).toEqual([25, 50, 75, 100])
+      expect(scrolls.every((p) => p.vid === pv.vid)).toBe(true)
+      expect(scrolls.some((p) => !p.vid)).toBe(false)
+
+      a.stop()
     })
   })
 

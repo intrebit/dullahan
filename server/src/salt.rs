@@ -1,7 +1,8 @@
 //! Daily-rotating salt for anonymized visitor hashing (rung 2). The salt lives
 //! in `daily_salts`, is generated once per UTC day, cached in memory, and
-//! deleted after 48h. Once a day's salt is gone, its visitor hashes can never
-//! be recomputed or re-linked.
+//! pruned after retention on startup and periodically while the server runs.
+//! Once a day's salt is gone, its visitor hashes can never be recomputed or
+//! re-linked.
 
 use base64::Engine;
 use chrono::NaiveDate;
@@ -50,15 +51,20 @@ pub async fn current_salt(
     let n = stored.len().min(32);
     salt[..n].copy_from_slice(&stored[..n]);
 
-    // Opportunistic cleanup: keep only today and yesterday, so a rotated salt is
-    // gone within ~48h and can never be used to re-link historical hashes.
-    let _ = sqlx::query("DELETE FROM daily_salts WHERE day < $1")
-        .bind(today - chrono::Duration::days(1))
-        .execute(pool)
-        .await;
+    prune_old_salts(pool, today).await?;
 
     *cache.lock().unwrap() = Some((today, salt));
     Ok(salt)
+}
+
+/// Keep only today and yesterday. Call on startup and periodically so salts are
+/// pruned even if no fresh session-enabled traffic arrives after a quiet period.
+pub async fn prune_old_salts(pool: &PgPool, today: NaiveDate) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM daily_salts WHERE day < $1")
+        .bind(today - chrono::Duration::days(1))
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// `base64url(sha256(salt ‖ site_id ‖ ip ‖ ua))[..18]`. The site_id binds the

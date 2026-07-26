@@ -240,9 +240,13 @@ pub async fn timeseries(
     to_ts: i64,
     bucket: &str,
 ) -> sqlx::Result<Vec<TimeseriesPoint>> {
-    let trunc = if bucket == "hour" { "hour" } else { "day" };
+    let bucket_ms = if bucket == "hour" {
+        60 * 60 * 1000
+    } else {
+        24 * 60 * 60 * 1000
+    };
     let rows = sqlx::query(&format!(
-        "SELECT date_trunc('{trunc}', to_timestamp(ts / 1000.0)) AS bucket,
+        "SELECT to_timestamp(((ts / {bucket_ms}) * {bucket_ms}) / 1000.0) AS bucket,
                 COUNT(*)::bigint AS pageviews,
                 NULLIF(COUNT(DISTINCT visitor_hash) FILTER (WHERE visitor_hash IS NOT NULL), 0)::bigint AS uniques
          FROM analytics_events

@@ -1,9 +1,11 @@
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use dullahan::{config::Config, router, router_with_metrics, state::AppState};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt;
@@ -22,6 +24,16 @@ fn state_with(
     allowed_sites: Option<Vec<String>>,
     sessions_enabled: bool,
 ) -> AppState {
+    state_with_trust(pool, admin_token, allowed_sites, sessions_enabled, false)
+}
+
+fn state_with_trust(
+    pool: PgPool,
+    admin_token: Option<&str>,
+    allowed_sites: Option<Vec<String>>,
+    sessions_enabled: bool,
+    trust_proxy_headers: bool,
+) -> AppState {
     AppState {
         config: Arc::new(Config {
             bind_addr: "0.0.0.0:0".into(),
@@ -32,6 +44,7 @@ fn state_with(
             contact_to: None,
             stats_origins: None,
             behind_tls: false,
+            trust_proxy_headers,
             sessions_enabled,
         }),
         pool,
@@ -40,29 +53,46 @@ fn state_with(
     }
 }
 
+fn with_peer(mut req: Request<Body>, ip: &str) -> Request<Body> {
+    let ip: IpAddr = ip.parse().unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(SocketAddr::new(ip, 12345)));
+    req
+}
+
 fn post_collect(body: Value) -> Request<Body> {
-    Request::builder()
+    let req = Request::builder()
         .uri("/collect")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
-        // SmartIpKeyExtractor needs an IP source; provide one explicitly.
         .header("x-forwarded-for", "10.0.0.1")
         .body(Body::from(body.to_string()))
-        .unwrap()
+        .unwrap();
+    with_peer(req, "10.0.0.1")
 }
 
 const CHROME_WIN: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
      (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 fn post_collect_ua(body: Value, ip: &str, ua: &str) -> Request<Body> {
-    Request::builder()
+    post_collect_ua_with_peer(body, ip, ip, ua)
+}
+
+fn post_collect_ua_with_peer(
+    body: Value,
+    forwarded_for: &str,
+    peer_ip: &str,
+    ua: &str,
+) -> Request<Body> {
+    let req = Request::builder()
         .uri("/collect")
         .method("POST")
         .header(header::CONTENT_TYPE, "application/json")
-        .header("x-forwarded-for", ip)
+        .header("x-forwarded-for", forwarded_for)
         .header(header::USER_AGENT, ua)
         .body(Body::from(body.to_string()))
-        .unwrap()
+        .unwrap();
+    with_peer(req, peer_ip)
 }
 
 async fn body_json(resp: axum::response::Response) -> Value {
@@ -517,6 +547,63 @@ async fn sessions_enabled_records_visitor_hash_and_ua(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn sessions_hash_ignores_forwarded_for_by_default(pool: PgPool) {
+    let app = router(state_with(pool.clone(), None, None, true));
+    let now = chrono::Utc::now().timestamp_millis();
+
+    for forwarded_for in ["1.1.1.1", "2.2.2.2"] {
+        app.clone()
+            .oneshot(post_collect_ua_with_peer(
+                json!({"t":"pageview","s":"s","p":"/","ts":now}),
+                forwarded_for,
+                "10.0.0.1",
+                CHROME_WIN,
+            ))
+            .await
+            .unwrap();
+    }
+    wait_for_count(&pool, 2).await;
+
+    let hashes: Vec<String> =
+        sqlx::query_scalar("SELECT visitor_hash FROM analytics_events ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(hashes.len(), 2);
+    assert_eq!(hashes[0], hashes[1], "default mode hashes the peer IP");
+}
+
+#[sqlx::test]
+async fn sessions_hash_honors_forwarded_for_when_trusted(pool: PgPool) {
+    let app = router(state_with_trust(pool.clone(), None, None, true, true));
+    let now = chrono::Utc::now().timestamp_millis();
+
+    for forwarded_for in ["1.1.1.1", "2.2.2.2"] {
+        app.clone()
+            .oneshot(post_collect_ua_with_peer(
+                json!({"t":"pageview","s":"s","p":"/","ts":now}),
+                forwarded_for,
+                "10.0.0.1",
+                CHROME_WIN,
+            ))
+            .await
+            .unwrap();
+    }
+    wait_for_count(&pool, 2).await;
+
+    let hashes: Vec<String> =
+        sqlx::query_scalar("SELECT visitor_hash FROM analytics_events ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(hashes.len(), 2);
+    assert_ne!(
+        hashes[0], hashes[1],
+        "trusted mode hashes the forwarded client IP"
+    );
+}
+
+#[sqlx::test]
 async fn summary_reports_unique_visitors_and_bounce_rate_when_enabled(pool: PgPool) {
     let app = router(state_with(pool.clone(), None, None, true));
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -643,6 +730,29 @@ async fn salt_rotates_daily_and_keeps_48h(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn salt_prune_does_not_require_creating_today_salt(pool: PgPool) {
+    use dullahan::salt::{current_salt, new_cache, prune_old_salts};
+    let cache = new_cache();
+    let d1 = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let d2 = chrono::NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
+    let d5 = chrono::NaiveDate::from_ymd_opt(2026, 1, 5).unwrap();
+
+    current_salt(&pool, &cache, d1).await.unwrap();
+    current_salt(&pool, &cache, d2).await.unwrap();
+    prune_old_salts(&pool, d5).await.unwrap();
+
+    let remaining: Vec<chrono::NaiveDate> =
+        sqlx::query_scalar("SELECT day FROM daily_salts ORDER BY day")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        remaining.is_empty(),
+        "old salts should be pruned without creating d5"
+    );
+}
+
+#[sqlx::test]
 async fn pageleave_dur_is_clamped(pool: PgPool) {
     let app = router(test_state(pool.clone(), None, None));
     let resp = app
@@ -693,8 +803,65 @@ async fn collect_rate_limits_per_ip(pool: PgPool) {
         .header("x-forwarded-for", "10.9.9.9")
         .body(Body::from(body.to_string()))
         .unwrap();
+    let other = with_peer(other, "10.9.9.9");
     let resp = app.oneshot(other).await.unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+#[sqlx::test]
+async fn collect_rate_limit_ignores_spoofed_forwarded_for_by_default(pool: PgPool) {
+    let app = router(test_state(pool, None, None));
+    let body = json!({"t": "pageview", "s": "site-1", "p": "/", "ts": 1_700_000_000_000_i64});
+
+    let mut saw_429 = false;
+    for i in 0..80 {
+        let req = Request::builder()
+            .uri("/collect")
+            .method("POST")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", format!("10.0.0.{i}"))
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(with_peer(req, "10.0.0.1"))
+            .await
+            .unwrap();
+        if resp.status() == StatusCode::TOO_MANY_REQUESTS {
+            saw_429 = true;
+            break;
+        }
+    }
+    assert!(
+        saw_429,
+        "spoofed x-forwarded-for must not evade default limiter"
+    );
+}
+
+#[sqlx::test]
+async fn collect_rate_limit_honors_forwarded_for_when_trusted(pool: PgPool) {
+    let app = router(state_with_trust(pool, None, None, false, true));
+    let body = json!({"t": "pageview", "s": "site-1", "p": "/", "ts": 1_700_000_000_000_i64});
+
+    for i in 0..80 {
+        let req = Request::builder()
+            .uri("/collect")
+            .method("POST")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-forwarded-for", format!("10.0.0.{i}"))
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(with_peer(req, "10.0.0.1"))
+            .await
+            .unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "trusted x-forwarded-for should distribute requests by client IP"
+        );
+    }
 }
 
 #[sqlx::test]
@@ -884,6 +1051,36 @@ async fn timeseries_omits_unique_visitors_when_disabled(pool: PgPool) {
     assert!(
         body[0].get("uniqueVisitors").is_none(),
         "sessions off => omitted; got {body}"
+    );
+}
+
+#[sqlx::test]
+async fn timeseries_day_buckets_are_utc_stable(pool: PgPool) {
+    let ts = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:30:00Z")
+        .unwrap()
+        .timestamp_millis();
+    sqlx::query(
+        "INSERT INTO analytics_events (site_id, type, path, ts)
+         VALUES ('tz', 'pageview', '/', $1)",
+    )
+    .bind(ts)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("SET TIME ZONE 'America/Los_Angeles'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let rows = dullahan::db::timeseries(&pool, "tz", ts - 1_000, ts + 1_000, "day")
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].bucket.timestamp_millis(),
+        chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .timestamp_millis()
     );
 }
 
@@ -1668,6 +1865,7 @@ async fn stats_cors_accepts_wildcard_origin(pool: PgPool) {
             contact_to: None,
             stats_origins: Some(vec!["*".into()]),
             behind_tls: false,
+            trust_proxy_headers: false,
             sessions_enabled: false,
         }),
         pool,

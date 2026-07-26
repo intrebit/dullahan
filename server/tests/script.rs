@@ -17,6 +17,7 @@ fn test_state(pool: PgPool) -> AppState {
             contact_to: None,
             stats_origins: None,
             behind_tls: false,
+            trust_proxy_headers: false,
             sessions_enabled: false,
         }),
         pool,

@@ -3,11 +3,13 @@
 use crate::state::AppState;
 use crate::types::RawPayload;
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
+use std::net::SocketAddr;
 
 pub async fn collect(
     State(state): State<AppState>,
+    peer: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
     Json(mut payload): Json<RawPayload>,
 ) -> StatusCode {
@@ -30,19 +32,29 @@ pub async fn collect(
         .filter(|c| c.len() == 2 && c.chars().all(|ch| ch.is_ascii_alphabetic()))
         .map(|c| c.to_ascii_uppercase());
 
-    // Rung 2 enrichment (opt-in). With sessions disabled we read neither the
-    // User-Agent nor the client IP, so an upgrade changes nothing by default.
+    // Rung 2 enrichment (opt-in). With sessions disabled this handler reads
+    // neither the User-Agent nor the selected client IP for analytics.
     let (visitor_hash, browser, os) = if state.config.sessions_enabled {
         let ua = headers
             .get("user-agent")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         let (browser, os) = crate::ua::parse_ua(ua);
-        let visitor_hash = match client_ip(&headers) {
+        let peer_ip = peer.map(|ConnectInfo(addr)| addr.ip());
+        let visitor_hash = match crate::client_ip::select_client_ip(
+            &headers,
+            peer_ip,
+            state.config.trust_proxy_headers,
+        ) {
             Some(ip) => {
                 let today = chrono::Utc::now().date_naive();
                 match crate::salt::current_salt(&state.pool, &state.salt_cache, today).await {
-                    Ok(salt) => Some(crate::salt::visitor_hash(&salt, payload.site_id(), &ip, ua)),
+                    Ok(salt) => Some(crate::salt::visitor_hash(
+                        &salt,
+                        payload.site_id(),
+                        &ip.to_string(),
+                        ua,
+                    )),
                     Err(err) => {
                         tracing::warn!(error = %err, "salt lookup failed; skipping visitor hash");
                         None
@@ -76,22 +88,4 @@ pub async fn collect(
     });
 
     StatusCode::ACCEPTED
-}
-
-/// Client IP from the proxy headers the rate limiter already trusts. The raw IP
-/// is only used transiently to derive the salted hash — never stored.
-fn client_ip(headers: &HeaderMap) -> Option<String> {
-    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
-        && let Some(first) = xff.split(',').next()
-    {
-        let ip = first.trim();
-        if !ip.is_empty() {
-            return Some(ip.to_string());
-        }
-    }
-    headers
-        .get("x-real-ip")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
 }

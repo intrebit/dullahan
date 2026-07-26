@@ -48,7 +48,7 @@ promises metrics the data can't support:
   all events of that pageload. It is **one page-visit**, NOT a multi-page session.
   Always present (no opt-in). Join an event to its pageview by `view_id`.
 - **`visitor_hash`** — `H(daily_salt, site, ip, ua)`, one value per visitor per
-  **UTC day** (salt rotates at 00:00 UTC, deleted after 48h). Only set when
+  **UTC day** (salt rotates at 00:00 UTC, then is pruned after retention). Only set when
   `SESSIONS_ENABLED`. The basis for sessions; **cannot** link across days.
 
 `type ∈ {pageview, event, performance, pageleave}`. Client time is `ts` (bigint
@@ -109,10 +109,11 @@ ms, clamped to a sane window on ingest); server receive time is `received_at`.
 
 ## Privacy invariants (never break)
 
-No cookies, no fingerprinting, **no raw IP storage — ever**. Sessions off (default)
-⇒ the server reads neither IP nor User-Agent. The salt is daily-rotating and
-deleted, by design — so new-vs-returning, retention, and DAU/MAU are **impossible
-and intentionally not built**. Don't fake cross-day identity.
+No cookies, no fingerprinting, **no raw IP storage — ever**. The selected client
+IP is processed transiently for rate limiting. Sessions off (default) ⇒ `/collect`
+otherwise uses neither IP nor User-Agent. The salt is daily-rotating and pruned,
+by design — so new-vs-returning, retention, and DAU/MAU are **impossible and
+intentionally not built**. Don't fake cross-day identity.
 
 ## Status
 
