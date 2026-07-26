@@ -1,6 +1,6 @@
 # Try Dullahan in two minutes:
 #   ADMIN_TOKEN=$(openssl rand -hex 24) docker compose up --build
-# Then: curl localhost:3001/health  ·  open localhost:3001/pt.js
+# Then: curl localhost:3001/health
 services:
   db:
     image: postgres:16

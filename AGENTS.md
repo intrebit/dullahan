@@ -1,7 +1,8 @@
 # dullahan — developer guide
 
-GDPR-compliant, cookie-free web analytics. A TypeScript browser client that POSTs
-events to a self-hostable Rust ingest + read API backed by Postgres.
+GDPR-compliant, cookie-free web analytics: a self-hostable Rust ingest + read API
+(plus a headless blog + contact endpoint) backed by Postgres. Clients POST events
+over plain HTTP — the browser tracker itself lives with the frontend, not here.
 
 For what it does and how to run it read [`README.md`](README.md); for the HTTP
 surface read [`docs/api.md`](docs/api.md). This file is how to **work on** the repo.
@@ -10,13 +11,14 @@ surface read [`docs/api.md`](docs/api.md). This file is how to **work on** the r
 
 | Path | What |
 |---|---|
-| `tracker/` | Browser SDK (TypeScript, built with tsup, tested with vitest). npm package `dullahan`. |
 | `server/` | Ingest + read API (Rust + Axum + sqlx + Postgres). Crate `dullahan`. |
 | `server/migrations/` | sqlx SQL migrations, applied automatically on server startup. |
 | `deploy/` | Self-host: `install.sh`, systemd unit, `Caddyfile`, env example. |
-| `e2e/` | Playwright: a real browser drives the tracker against a live server. Its own npm project, run by CI. |
 | `docs/` | `api.md` (HTTP reference), `deploy.md` (config + hardening), `SECURITY.md` (policy). |
-| `.github/workflows/ci.yml` | CI: lint (fmt+clippy), server (build+test+boot), tracker (vitest+build), cargo audit, e2e (playwright), docker (build+smoke). |
+| `.github/workflows/ci.yml` | CI: lint (fmt+clippy), server (build+test+boot), cargo audit, docker (build+smoke). |
+
+Pure Rust: the repo ships no JavaScript. The browser tracker that POSTs to
+`/collect` lives in the frontend project that consumes this backend.
 
 ## Build / test / lint
 
@@ -30,17 +32,8 @@ cargo clippy --all-targets -- -D warnings
 Tests use `#[sqlx::test]`, which spins up an ephemeral DB per test from
 `DATABASE_URL` (a `dullahan_test` DB with CREATEDB rights must exist locally).
 
-**Tracker** (from `tracker/`):
-```bash
-npm ci
-npm test            # vitest
-npm run build        # tsup
-npx tsc --noEmit     # tsup/esbuild does NOT typecheck — run tsc to catch type errors CI would
-```
-
-CI runs these plus `e2e` (Playwright, from `e2e/`: `npm ci && npx playwright test`
-against a server it builds) and `docker` (image build + `/health`, `/pt.js`
-smoke). Six gates; keep them green.
+CI runs the above plus `docker` (image build + `/health` smoke). Four gates
+(lint, server, audit, docker); keep them green.
 
 ## The data model (get this right)
 

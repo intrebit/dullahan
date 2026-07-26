@@ -2,8 +2,8 @@
 
 dullahan exposes four HTTP surfaces: the **stats read API** (`/stats/*`,
 camelCase JSON, admin-gated), the **blog/content API** (`/posts`, snake_case
-JSON), the **contact form** (`/contact`), and ingest (`/collect`, written by the
-tracker — see the [README](../README.md)). Configuration and self-host hardening
+JSON), the **contact form** (`/contact`), and ingest (`/collect`, which any
+browser tracker POSTs events to). Configuration and self-host hardening
 are in [`deploy.md`](deploy.md).
 
 ## Stats (`/stats/*`)
