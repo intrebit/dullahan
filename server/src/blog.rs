@@ -10,10 +10,26 @@
 //! `id` is a Postgres `uuid` but is carried in Rust as a `String` (selected via
 //! `id::text`) so the crate needs no `uuid` dependency or sqlx `uuid` feature.
 
+//! Every endpoint is tenant-scoped: the caller names a site via `?site=`, which
+//! arrives as an [`crate::auth::SiteScope`] that has already authorized the
+//! caller for that tenant. Handlers take that rather than reading `site` from
+//! their own query struct, so there is no way to reach the DB layer with an
+//! unauthorized site.
+//!
+//! **Two independent gates, both mandatory.** The `Scope` predicate stops an
+//! unauthorized caller; the `site_id = $n` predicate in every statement stops an
+//! *authorized* caller from reaching another tenant's row through an id they
+//! guessed or scraped. Dropping either one is a cross-tenant leak.
+//!
+//! Bind-numbering convention: the `site_id` placeholder is **appended as the
+//! highest-numbered parameter** in every statement, so no existing placeholder
+//! is renumbered. That is why `WHERE site_id = $10` looks out of order.
+
+use crate::auth::SiteScope;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +37,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct PostMeta {
     pub id: String,
+    pub site_id: String,
     pub slug: String,
     pub title: String,
     pub description: String,
@@ -36,6 +53,7 @@ pub struct PostMeta {
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct PostDetail {
     pub id: String,
+    pub site_id: String,
     pub slug: String,
     pub title: String,
     pub description: String,
@@ -48,9 +66,9 @@ pub struct PostDetail {
     pub body_markdown: String,
 }
 
-const META_COLS: &str = "id::text AS id, slug, title, description, author, image, \
+const META_COLS: &str = "id::text AS id, site_id, slug, title, description, author, image, \
      pub_date, updated_date, draft, views";
-const DETAIL_COLS: &str = "id::text AS id, slug, title, description, author, image, \
+const DETAIL_COLS: &str = "id::text AS id, site_id, slug, title, description, author, image, \
      pub_date, updated_date, draft, views, body_markdown";
 
 #[derive(Debug, Serialize)]
@@ -135,53 +153,63 @@ fn internal(context: &'static str, err: &sqlx::Error) -> StatusCode {
 /// without it (or unauthed) the list is forced to published-only.
 pub async fn list(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: SiteScope,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<ListResponse>, StatusCode> {
     let limit = q.limit.clamp(1, 100) as i64;
     let offset = q.offset as i64;
-    let include_drafts = crate::is_admin(&state, &headers) && q.status.as_deref() == Some("all");
+    let include_drafts =
+        ctx.scope.can_read_private(&ctx.site) && q.status.as_deref() == Some("all");
 
-    let where_clause = if include_drafts {
+    // The tenant predicate is unconditional; only the draft filter varies.
+    let draft_clause = if include_drafts {
         ""
     } else {
-        "WHERE draft = false"
+        "AND draft = false"
     };
 
     let posts = sqlx::query_as::<_, PostMeta>(&format!(
-        "SELECT {META_COLS} FROM blog_posts {where_clause} ORDER BY pub_date DESC LIMIT $1 OFFSET $2"
+        "SELECT {META_COLS} FROM blog_posts WHERE site_id = $3 {draft_clause} \
+         ORDER BY pub_date DESC LIMIT $1 OFFSET $2"
     ))
     .bind(limit)
     .bind(offset)
+    .bind(&ctx.site)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| internal("blog list query failed", &e))?;
 
-    let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM blog_posts {where_clause}"))
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|e| internal("blog count query failed", &e))?;
+    // Note this query previously took no binds at all — the tenant filter adds
+    // one, and forgetting it is a compile-clean runtime 500.
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM blog_posts WHERE site_id = $1 {draft_clause}"
+    ))
+    .bind(&ctx.site)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| internal("blog count query failed", &e))?;
 
     Ok(Json(ListResponse { posts, total }))
 }
 
-/// GET /posts/:slug — single post. 404 if absent, or if it is a draft and the
-/// request is not admin-authed.
+/// GET /posts/:slug — single post within a site. 404 if absent, or if it is a
+/// draft and the caller may not read the site's private content.
 pub async fn get_post(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: SiteScope,
     Path(slug): Path<String>,
 ) -> Result<Json<PostDetail>, StatusCode> {
     let post = sqlx::query_as::<_, PostDetail>(&format!(
-        "SELECT {DETAIL_COLS} FROM blog_posts WHERE slug = $1"
+        "SELECT {DETAIL_COLS} FROM blog_posts WHERE slug = $1 AND site_id = $2"
     ))
     .bind(&slug)
+    .bind(&ctx.site)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| internal("blog get query failed", &e))?;
 
     match post {
-        Some(p) if p.draft && !crate::is_admin(&state, &headers) => Err(StatusCode::NOT_FOUND),
+        Some(p) if p.draft && !ctx.scope.can_read_private(&ctx.site) => Err(StatusCode::NOT_FOUND),
         Some(p) => Ok(Json(p)),
         None => Err(StatusCode::NOT_FOUND),
     }
@@ -190,25 +218,34 @@ pub async fn get_post(
 /// POST /posts/:slug/view — public, atomic increment. Always 204: a missing or
 /// draft slug is a no-op. The frontend debounces once per session, so no dedupe
 /// happens here.
+///
+/// The `site_id` predicate is load-bearing even though this endpoint takes no
+/// auth: slugs are only unique *per site*, so without it an anonymous ping to a
+/// shared slug like `about` would increment every tenant's post at once.
 pub async fn view(
     State(state): State<AppState>,
+    ctx: SiteScope,
     Path(slug): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    sqlx::query("UPDATE blog_posts SET views = views + 1 WHERE slug = $1 AND draft = false")
-        .bind(&slug)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| internal("blog view increment failed", &e))?;
+    sqlx::query(
+        "UPDATE blog_posts SET views = views + 1 \
+         WHERE slug = $1 AND site_id = $2 AND draft = false",
+    )
+    .bind(&slug)
+    .bind(&ctx.site)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| internal("blog view increment failed", &e))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// POST /posts — create. Admin only. 409 on duplicate slug.
 pub async fn create(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: SiteScope,
     Json(body): Json<CreatePost>,
 ) -> Result<(StatusCode, Json<PostDetail>), StatusCode> {
-    if !crate::is_admin_strict(&state, &headers) {
+    if !ctx.scope.can_write(&ctx.site) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -218,9 +255,9 @@ pub async fn create(
     }
 
     let post = sqlx::query_as::<_, PostDetail>(&format!(
-        "INSERT INTO blog_posts (slug, title, description, author, image, body_markdown, draft, pub_date)
+        "INSERT INTO blog_posts (slug, title, description, author, image, body_markdown, draft, pub_date, site_id)
          VALUES ($1, $2, COALESCE($3::text, ''), COALESCE($4::text, ''), $5::text, $6,
-                 COALESCE($7::boolean, false), COALESCE($8::timestamptz, now()))
+                 COALESCE($7::boolean, false), COALESCE($8::timestamptz, now()), $9)
          RETURNING {DETAIL_COLS}"
     ))
     .bind(slug)
@@ -231,11 +268,18 @@ pub async fn create(
     .bind(body.body_markdown.as_str())
     .bind(body.draft)
     .bind(body.pub_date)
+    .bind(&ctx.site)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
         if is_pg_code(&e, "23505") {
+            // Now a duplicate (site_id, slug) — two tenants may share a slug.
             StatusCode::CONFLICT
+        } else if is_pg_code(&e, "23503") {
+            // Unknown site: the registry is permissive while empty, the foreign
+            // key is not. A bad `?site=` is a client error, not a 500. 400 not
+            // 403, so 403 stays unambiguously "not yours / suspended".
+            StatusCode::BAD_REQUEST
         } else {
             internal("blog create failed", &e)
         }
@@ -244,15 +288,24 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(post)))
 }
 
-/// PATCH /posts/:id — update by id. Admin only. Any subset of the create fields;
-/// omitted fields are left unchanged. Sets `updated_date = now()`. 404 if missing.
+/// PATCH /posts/:id — update by id, within a site. Any subset of the create
+/// fields; omitted fields are left unchanged. Sets `updated_date = now()`.
+///
+/// The tenant predicate lives inside the same `UPDATE`, not a separate SELECT,
+/// so there is no window in which ownership could change between check and
+/// write. A correct uuid belonging to another tenant matches zero rows, mutates
+/// nothing, and returns **404** rather than 403 — the response must not confirm
+/// that the id exists under some other tenant.
+///
+/// `UpdatePost` deliberately has no `site` field: `?site=` is a *scope*, never a
+/// *target*. Moving content between tenants is not an API operation.
 pub async fn update(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: SiteScope,
     Path(id): Path<String>,
     Json(body): Json<UpdatePost>,
 ) -> Result<Json<PostDetail>, StatusCode> {
-    if !crate::is_admin_strict(&state, &headers) {
+    if !ctx.scope.can_write(&ctx.site) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -283,7 +336,7 @@ pub async fn update(
              draft = COALESCE($8::boolean, draft),
              pub_date = COALESCE($9::timestamptz, pub_date),
              updated_date = now()
-         WHERE id = $1::uuid
+         WHERE id = $1::uuid AND site_id = $10
          RETURNING {DETAIL_COLS}"
     ))
     .bind(&id)
@@ -295,6 +348,7 @@ pub async fn update(
     .bind(body.body_markdown.as_deref())
     .bind(body.draft)
     .bind(body.pub_date)
+    .bind(&ctx.site)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {
@@ -310,18 +364,20 @@ pub async fn update(
     post.map(Json).ok_or(StatusCode::NOT_FOUND)
 }
 
-/// DELETE /posts/:id — admin only. 404 if missing.
+/// DELETE /posts/:id — within a site. 404 if missing, and equally 404 if the id
+/// belongs to another tenant (same non-oracle property as PATCH).
 pub async fn delete_post(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: SiteScope,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    if !crate::is_admin_strict(&state, &headers) {
+    if !ctx.scope.can_write(&ctx.site) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let result = sqlx::query("DELETE FROM blog_posts WHERE id = $1::uuid")
+    let result = sqlx::query("DELETE FROM blog_posts WHERE id = $1::uuid AND site_id = $2")
         .bind(&id)
+        .bind(&ctx.site)
         .execute(&state.pool)
         .await
         .map_err(|e| {

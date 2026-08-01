@@ -1,6 +1,7 @@
 //! The admin-gated `/stats/*` read API (summary, timeseries, top, events,
 //! channels, realtime).
 
+use crate::auth::SiteScope;
 use crate::state::AppState;
 use crate::types::{SummaryChange, SummaryResponse, TopDimension};
 use axum::Json;
@@ -11,7 +12,6 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 pub struct RangeQuery {
-    pub site: String,
     #[serde(default = "default_days")]
     pub days: u32,
     /// `prev` adds a comparison against the immediately preceding equal window.
@@ -25,7 +25,6 @@ fn default_days() -> u32 {
 
 #[derive(Debug, Deserialize)]
 pub struct TimeseriesQuery {
-    pub site: String,
     #[serde(default = "default_days")]
     pub days: u32,
     #[serde(default)]
@@ -34,7 +33,6 @@ pub struct TimeseriesQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct TopQuery {
-    pub site: String,
     #[serde(default = "default_days")]
     pub days: u32,
     pub dim: String,
@@ -48,7 +46,6 @@ fn default_limit() -> u32 {
 
 #[derive(Debug, Deserialize)]
 pub struct EventsQuery {
-    pub site: String,
     #[serde(default = "default_days")]
     pub days: u32,
     #[serde(default)]
@@ -61,7 +58,6 @@ pub struct EventsQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct RealtimeQuery {
-    pub site: String,
     /// Trailing window in minutes (clamped 1–60). Defaults to 5.
     #[serde(default = "default_realtime_minutes")]
     pub minutes: u32,
@@ -78,22 +74,13 @@ fn range(days: u32) -> (i64, i64) {
     (from_ts, to_ts)
 }
 
-fn site_check(state: &AppState, site: &str) -> Result<(), StatusCode> {
-    if let Some(allowed) = &state.config.allowed_sites
-        && !allowed.iter().any(|s| s == site)
-    {
-        return Err(StatusCode::FORBIDDEN);
-    }
-    Ok(())
-}
-
 pub async fn summary(
     State(state): State<AppState>,
+    ctx: SiteScope,
     Query(q): Query<RangeQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    site_check(&state, &q.site)?;
     let (from_ts, to_ts) = range(q.days);
-    let current = crate::db::summary(&state.pool, &q.site, from_ts, to_ts)
+    let current = crate::db::summary(&state.pool, &ctx.site, from_ts, to_ts)
         .await
         .map_err(|err| {
             tracing::error!(error = %err, "summary query failed");
@@ -105,7 +92,7 @@ pub async fn summary(
         // Upper bound is from_ts - 1: the current window's BETWEEN is inclusive of
         // from_ts, so sharing that boundary would double-count an event at exactly
         // from_ts in both windows.
-        let prev = crate::db::summary(&state.pool, &q.site, from_ts - span, from_ts - 1)
+        let prev = crate::db::summary(&state.pool, &ctx.site, from_ts - span, from_ts - 1)
             .await
             .map_err(|err| {
                 tracing::error!(error = %err, "summary compare query failed");
@@ -149,13 +136,13 @@ fn pct_change_f64(current: f64, previous: f64) -> Option<f64> {
 
 pub async fn timeseries(
     State(state): State<AppState>,
+    ctx: SiteScope,
     Query(q): Query<TimeseriesQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    site_check(&state, &q.site)?;
     let (from_ts, to_ts) = range(q.days);
     let bucket = q.bucket.as_deref().unwrap_or("day");
     let bucket = if bucket == "hour" { "hour" } else { "day" };
-    let rows = crate::db::timeseries(&state.pool, &q.site, from_ts, to_ts, bucket)
+    let rows = crate::db::timeseries(&state.pool, &ctx.site, from_ts, to_ts, bucket)
         .await
         .map_err(|err| {
             tracing::error!(error = %err, "timeseries query failed");
@@ -166,13 +153,13 @@ pub async fn timeseries(
 
 pub async fn top(
     State(state): State<AppState>,
+    ctx: SiteScope,
     Query(q): Query<TopQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    site_check(&state, &q.site)?;
     let dim = TopDimension::parse(&q.dim).ok_or(StatusCode::BAD_REQUEST)?;
     let limit = q.limit.clamp(1, 100) as i64;
     let (from_ts, to_ts) = range(q.days);
-    let rows = crate::db::top(&state.pool, &q.site, from_ts, to_ts, dim, limit)
+    let rows = crate::db::top(&state.pool, &ctx.site, from_ts, to_ts, dim, limit)
         .await
         .map_err(|err| {
             tracing::error!(error = %err, "top query failed");
@@ -183,9 +170,9 @@ pub async fn top(
 
 pub async fn events(
     State(state): State<AppState>,
+    ctx: SiteScope,
     Query(q): Query<EventsQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    site_check(&state, &q.site)?;
     // A prop breakdown needs an event to break down; reject `by` without `name`.
     if q.by.is_some() && q.name.is_none() {
         return Err(StatusCode::BAD_REQUEST);
@@ -194,7 +181,7 @@ pub async fn events(
     let (from_ts, to_ts) = range(q.days);
     let rows = crate::db::events(
         &state.pool,
-        &q.site,
+        &ctx.site,
         from_ts,
         to_ts,
         q.name.as_deref(),
@@ -211,11 +198,11 @@ pub async fn events(
 
 pub async fn channels(
     State(state): State<AppState>,
+    ctx: SiteScope,
     Query(q): Query<RangeQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    site_check(&state, &q.site)?;
     let (from_ts, to_ts) = range(q.days);
-    let rows = crate::db::channels(&state.pool, &q.site, from_ts, to_ts)
+    let rows = crate::db::channels(&state.pool, &ctx.site, from_ts, to_ts)
         .await
         .map_err(|err| {
             tracing::error!(error = %err, "channels query failed");
@@ -226,11 +213,11 @@ pub async fn channels(
 
 pub async fn realtime(
     State(state): State<AppState>,
+    ctx: SiteScope,
     Query(q): Query<RealtimeQuery>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    site_check(&state, &q.site)?;
     let minutes = q.minutes.clamp(1, 60) as i32;
-    let rt = crate::db::realtime(&state.pool, &q.site, minutes)
+    let rt = crate::db::realtime(&state.pool, &ctx.site, minutes)
         .await
         .map_err(|err| {
             tracing::error!(error = %err, "realtime query failed");

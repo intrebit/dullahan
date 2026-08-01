@@ -9,16 +9,21 @@
 //! currency comes from config (`SHOP_CURRENCY`) and is echoed as `currency` in
 //! every response so the frontend can format without hardcoding it.
 
+//! Tenant scoping mirrors `blog.rs` exactly — see that module's header for the
+//! two-gates rule and the bind-numbering convention.
+
+use crate::auth::SiteScope;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct Product {
     pub id: String,
+    pub site_id: String,
     pub slug: String,
     pub title: String,
     pub description: String,
@@ -32,7 +37,7 @@ pub struct Product {
     pub updated_date: Option<DateTime<Utc>>,
 }
 
-const COLS: &str = "id::text AS id, slug, title, description, image, price_cents, \
+const COLS: &str = "id::text AS id, site_id, slug, title, description, image, price_cents, \
      available, position, draft, views, created_at, updated_date";
 
 /// A product plus the shop-wide currency, so the JSON is self-describing.
@@ -133,33 +138,39 @@ fn internal(context: &'static str, err: &sqlx::Error) -> StatusCode {
 /// Sold-out (`available = false`) items are still listed — that's a display flag.
 pub async fn list(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: SiteScope,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<ListResponse>, StatusCode> {
     let limit = q.limit.clamp(1, 200) as i64;
     let offset = q.offset as i64;
-    let include_drafts = crate::is_admin(&state, &headers) && q.status.as_deref() == Some("all");
+    let include_drafts =
+        ctx.scope.can_read_private(&ctx.site) && q.status.as_deref() == Some("all");
 
-    let where_clause = if include_drafts {
+    let draft_clause = if include_drafts {
         ""
     } else {
-        "WHERE draft = false"
+        "AND draft = false"
     };
 
     let rows = sqlx::query_as::<_, Product>(&format!(
-        "SELECT {COLS} FROM products {where_clause} \
+        "SELECT {COLS} FROM products WHERE site_id = $3 {draft_clause} \
          ORDER BY position ASC, created_at DESC LIMIT $1 OFFSET $2"
     ))
     .bind(limit)
     .bind(offset)
+    .bind(&ctx.site)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| internal("products list query failed", &e))?;
 
-    let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM products {where_clause}"))
-        .fetch_one(&state.pool)
-        .await
-        .map_err(|e| internal("products count query failed", &e))?;
+    // Previously took no binds; the tenant filter adds one.
+    let total: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM products WHERE site_id = $1 {draft_clause}"
+    ))
+    .bind(&ctx.site)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|e| internal("products count query failed", &e))?;
 
     let products = rows
         .into_iter()
@@ -172,18 +183,20 @@ pub async fn list(
 /// the request is not admin-authed.
 pub async fn get_product(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: SiteScope,
     Path(slug): Path<String>,
 ) -> Result<Json<ProductResponse>, StatusCode> {
-    let product =
-        sqlx::query_as::<_, Product>(&format!("SELECT {COLS} FROM products WHERE slug = $1"))
-            .bind(&slug)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| internal("products get query failed", &e))?;
+    let product = sqlx::query_as::<_, Product>(&format!(
+        "SELECT {COLS} FROM products WHERE slug = $1 AND site_id = $2"
+    ))
+    .bind(&slug)
+    .bind(&ctx.site)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| internal("products get query failed", &e))?;
 
     match product {
-        Some(p) if p.draft && !crate::is_admin(&state, &headers) => Err(StatusCode::NOT_FOUND),
+        Some(p) if p.draft && !ctx.scope.can_read_private(&ctx.site) => Err(StatusCode::NOT_FOUND),
         Some(p) => Ok(Json(with_currency(p, &state.config.shop_currency))),
         None => Err(StatusCode::NOT_FOUND),
     }
@@ -193,25 +206,34 @@ pub async fn get_product(
 /// which products are being viewed. Always 204: a missing or draft slug is a
 /// no-op. The frontend should ping this on a product-page view (debounce
 /// client-side); it mirrors the blog view counter.
+///
+/// The `site_id` predicate is load-bearing despite this endpoint taking no auth:
+/// slugs are only unique per site, so without it one anonymous ping would
+/// increment every tenant's product of the same name.
 pub async fn view(
     State(state): State<AppState>,
+    ctx: SiteScope,
     Path(slug): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    sqlx::query("UPDATE products SET views = views + 1 WHERE slug = $1 AND draft = false")
-        .bind(&slug)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| internal("products view increment failed", &e))?;
+    sqlx::query(
+        "UPDATE products SET views = views + 1 \
+         WHERE slug = $1 AND site_id = $2 AND draft = false",
+    )
+    .bind(&slug)
+    .bind(&ctx.site)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| internal("products view increment failed", &e))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// POST /products — create. Admin only. 409 on duplicate slug.
 pub async fn create(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: SiteScope,
     Json(body): Json<CreateProduct>,
 ) -> Result<(StatusCode, Json<ProductResponse>), StatusCode> {
-    if !crate::is_admin_strict(&state, &headers) {
+    if !ctx.scope.can_write(&ctx.site) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -222,9 +244,9 @@ pub async fn create(
     }
 
     let product = sqlx::query_as::<_, Product>(&format!(
-        "INSERT INTO products (slug, title, description, image, price_cents, available, position, draft)
+        "INSERT INTO products (slug, title, description, image, price_cents, available, position, draft, site_id)
          VALUES ($1, $2, COALESCE($3::text, ''), $4::text, COALESCE($5::bigint, 0),
-                 COALESCE($6::boolean, true), COALESCE($7::integer, 0), COALESCE($8::boolean, false))
+                 COALESCE($6::boolean, true), COALESCE($7::integer, 0), COALESCE($8::boolean, false), $9)
          RETURNING {COLS}"
     ))
     .bind(slug)
@@ -235,11 +257,16 @@ pub async fn create(
     .bind(body.available)
     .bind(body.position)
     .bind(body.draft)
+    .bind(&ctx.site)
     .fetch_one(&state.pool)
     .await
     .map_err(|e| {
         if is_pg_code(&e, "23505") {
+            // Duplicate (site_id, slug) — two tenants may share a slug.
             StatusCode::CONFLICT
+        } else if is_pg_code(&e, "23503") {
+            // Unknown site; see the matching comment in blog::create.
+            StatusCode::BAD_REQUEST
         } else {
             internal("products create failed", &e)
         }
@@ -253,13 +280,15 @@ pub async fn create(
 
 /// PATCH /products/:id — update by id. Admin only. Any subset of the create
 /// fields; omitted fields are left unchanged. Sets `updated_date = now()`.
+/// Same non-oracle property as `blog::update`: a correct uuid under another
+/// tenant matches zero rows and returns 404, never 403.
 pub async fn update(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: SiteScope,
     Path(id): Path<String>,
     Json(body): Json<UpdateProduct>,
 ) -> Result<Json<ProductResponse>, StatusCode> {
-    if !crate::is_admin_strict(&state, &headers) {
+    if !ctx.scope.can_write(&ctx.site) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
@@ -287,7 +316,7 @@ pub async fn update(
              position = COALESCE($8::integer, position),
              draft = COALESCE($9::boolean, draft),
              updated_date = now()
-         WHERE id = $1::uuid
+         WHERE id = $1::uuid AND site_id = $10
          RETURNING {COLS}"
     ))
     .bind(&id)
@@ -299,6 +328,7 @@ pub async fn update(
     .bind(body.available)
     .bind(body.position)
     .bind(body.draft)
+    .bind(&ctx.site)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| {
@@ -316,18 +346,20 @@ pub async fn update(
         .ok_or(StatusCode::NOT_FOUND)
 }
 
-/// DELETE /products/:id — admin only. 404 if missing.
+/// DELETE /products/:id — within a site. 404 both when missing and when the id
+/// belongs to another tenant.
 pub async fn delete_product(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    ctx: SiteScope,
     Path(id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    if !crate::is_admin_strict(&state, &headers) {
+    if !ctx.scope.can_write(&ctx.site) {
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let result = sqlx::query("DELETE FROM products WHERE id = $1::uuid")
+    let result = sqlx::query("DELETE FROM products WHERE id = $1::uuid AND site_id = $2")
         .bind(&id)
+        .bind(&ctx.site)
         .execute(&state.pool)
         .await
         .map_err(|e| {

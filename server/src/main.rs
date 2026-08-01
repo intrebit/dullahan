@@ -38,17 +38,52 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(addr = %config.bind_addr, "starting dullahan");
 
+    let pool = db::connect(&config.database_url).await?;
+    db::migrate(&pool).await?;
+
+    // Load the tenant registry before serving. Failure here is fatal, exactly
+    // like a failed migration — a process that is serving always has a loaded
+    // snapshot, so there is no "not yet loaded" state to reason about.
+    let sites = dullahan::sites::new_cache();
+    let site_count = dullahan::sites::refresh(&pool, &sites).await?;
+
+    // Decided once, here, and never recomputed from the live registry: if this
+    // were derived per request from "is the cache empty", a transient DB failure
+    // that emptied the cache would silently flip a locked-down deploy to
+    // world-readable.
+    let open_mode = config.admin_token.is_none() && site_count == 0;
+
     if config.admin_token.is_none() {
         tracing::warn!(
-            "ADMIN_TOKEN is not set — /stats/* and all blog reads (including drafts) \
-             are publicly readable, and the blog write endpoints (POST/PATCH/DELETE \
-             /posts) are refused until it is set. Set ADMIN_TOKEN to gate reads and \
-             enable authenticated writes."
+            "ADMIN_TOKEN is not set — /stats/* and all blog/product reads (including \
+             drafts) are publicly readable, and every write endpoint is refused until \
+             it is set. Set ADMIN_TOKEN to gate reads, enable authenticated writes, \
+             and unlock the /sites tenant registry."
+        );
+    }
+    if site_count == 0 {
+        tracing::warn!(
+            "the `sites` table is empty — every site id is admitted on /collect and \
+             /stats/*. Register your tenants via POST /sites to gate them."
         );
     }
 
-    let pool = db::connect(&config.database_url).await?;
-    db::migrate(&pool).await?;
+    {
+        let pool = pool.clone();
+        let sites = sites.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                // On failure the previous snapshot stays in place: a DB blip must
+                // not un-gate ingest or lock out every tenant.
+                if let Err(err) = dullahan::sites::refresh(&pool, &sites).await {
+                    tracing::warn!(error = %err, "site registry refresh failed; keeping last snapshot");
+                }
+            }
+        });
+    }
+
     dullahan::salt::prune_old_salts(&pool, chrono::Utc::now().date_naive()).await?;
     {
         let pool = pool.clone();
@@ -67,11 +102,19 @@ async fn main() -> anyhow::Result<()> {
 
     let mailer = config.email.clone().map(Mailer::new);
 
+    let admin_token_hash = config
+        .admin_token
+        .as_deref()
+        .map(dullahan::sites::token_digest);
+
     let state = AppState {
         config: Arc::new(config.clone()),
         pool,
         mailer,
         salt_cache: dullahan::salt::new_cache(),
+        sites,
+        open_mode,
+        admin_token_hash,
     };
 
     let app = router_with_metrics(state);

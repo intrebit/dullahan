@@ -29,6 +29,7 @@
 
 // Internal modules: public for the integration tests, hidden from the docs.
 #[doc(hidden)]
+pub mod auth;
 pub mod blog;
 #[doc(hidden)]
 pub mod channels;
@@ -50,6 +51,10 @@ pub mod ingest;
 pub mod products;
 #[doc(hidden)]
 pub mod salt;
+
+pub mod site_config;
+pub mod sites;
+pub mod sites_api;
 #[doc(hidden)]
 pub mod state;
 #[doc(hidden)]
@@ -63,12 +68,11 @@ pub use config::Config;
 pub use state::AppState;
 
 use axum::Router;
-use axum::extract::{DefaultBodyLimit, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
-use axum::middleware::{self, Next};
+use axum::extract::DefaultBodyLimit;
+use axum::http::{HeaderName, HeaderValue, header};
+use axum::middleware;
 use axum::routing::{get, post};
 use axum_prometheus::PrometheusMetricLayer;
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
 use tower_governor::{GovernorLayer, governor::GovernorConfigBuilder};
@@ -146,6 +150,17 @@ pub fn router(state: AppState) -> Router {
             .allow_headers([header::CONTENT_TYPE]),
     };
 
+    // CORS for the per-site config store. Reads are public (a storefront fetches
+    // its own config cross-origin); writes are admin-gated in the handler.
+    // Mirrors `cors_products` exactly: GET only, and AUTHORIZATION deliberately
+    // withheld so a browser cannot cross-origin preflight an admin PUT/DELETE.
+    // There is no browser dashboard yet; when there is one, widening this is a
+    // deliberate decision to make then, not a default to inherit now.
+    let cors_site_config = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([axum::http::Method::GET])
+        .allow_headers([header::CONTENT_TYPE]);
+
     let stats_routes = Router::new()
         .route("/stats/summary", get(stats::summary))
         .route("/stats/timeseries", get(stats::timeseries))
@@ -153,7 +168,10 @@ pub fn router(state: AppState) -> Router {
         .route("/stats/events", get(stats::events))
         .route("/stats/channels", get(stats::channels))
         .route("/stats/realtime", get(stats::realtime))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_admin))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_authenticated,
+        ))
         .layer(cors_stats);
 
     const PUBLIC_BODY_LIMIT: usize = 16 * 1024;
@@ -255,12 +273,41 @@ pub fn router(state: AppState) -> Router {
         .route("/products/:key/view", post(products::view))
         .layer(cors_products);
 
+    // Tenant registry. All-or-nothing operator gate, so unlike blog/products
+    // this genuinely is a job for a router-level layer. No CORS layer at all —
+    // see the module docs.
+    let sites_routes = Router::new()
+        .route("/sites", get(sites_api::list).post(sites_api::create))
+        .route(
+            "/sites/:id",
+            get(sites_api::get_site)
+                .patch(sites_api::update)
+                .delete(sites_api::delete_site),
+        )
+        .route("/sites/:id/token", post(sites_api::rotate_token))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_operator,
+        ));
+
+    let site_config_routes = Router::new()
+        .route("/site-config", get(site_config::list))
+        .route(
+            "/site-config/:site",
+            get(site_config::get_config)
+                .put(site_config::put_config)
+                .delete(site_config::delete_config),
+        )
+        .layer(cors_site_config);
+
     let mut app = Router::new()
         .merge(public_routes)
         .route("/health", get(health))
         .merge(stats_routes)
         .merge(blog_routes)
         .merge(product_routes)
+        .merge(site_config_routes)
+        .merge(sites_routes)
         .with_state(state.clone());
 
     // Security response headers (defense in depth — most are also useful when
@@ -306,59 +353,6 @@ pub fn router(state: AppState) -> Router {
         )
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid))
-}
-
-async fn require_admin(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    request: axum::extract::Request,
-    next: Next,
-) -> Result<axum::response::Response, StatusCode> {
-    if is_admin(&state, &headers) {
-        Ok(next.run(request).await)
-    } else {
-        Err(StatusCode::UNAUTHORIZED)
-    }
-}
-
-/// Whether a request carries a valid admin bearer token. When no `ADMIN_TOKEN`
-/// is configured this returns `true` — endpoints are open, matching the
-/// `/stats/*` middleware behaviour (the server warns about this at startup).
-/// Used both by the `require_admin` middleware and by handlers (e.g. blog) that
-/// need to vary behaviour based on whether the caller is admin.
-pub(crate) fn is_admin(state: &AppState, headers: &HeaderMap) -> bool {
-    let Some(expected) = state.config.admin_token.as_deref() else {
-        return true;
-    };
-
-    headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .map(str::trim)
-        .is_some_and(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()))
-}
-
-/// Like [`is_admin`], but a missing `ADMIN_TOKEN` is treated as *not* authorized.
-/// Gates the blog write endpoints (create/update/delete) so an unconfigured
-/// deploy can't be mutated by anonymous callers — secure by default, even though
-/// reads stay open when no token is set.
-pub(crate) fn is_admin_strict(state: &AppState, headers: &HeaderMap) -> bool {
-    state.config.admin_token.is_some() && is_admin(state, headers)
-}
-
-/// Constant-time token comparison. Both sides are hashed to a fixed-width
-/// digest first, so the comparison leaks neither the contents nor the length of
-/// the expected token (the previous length check returned early on a mismatch,
-/// revealing the correct token length via timing).
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let a = Sha256::digest(a);
-    let b = Sha256::digest(b);
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 async fn health() -> &'static str {
