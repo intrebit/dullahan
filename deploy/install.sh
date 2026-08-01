@@ -27,7 +27,6 @@ fi
 : "${ACME_EMAIL:?ACME_EMAIL env var required}"
 : "${PG_PASSWORD:?PG_PASSWORD env var required}"
 
-ALLOWED_SITES="${ALLOWED_SITES:-}"
 ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 PG_DB="${PG_DB:-dullahan}"
 PG_USER="${PG_USER:-dullahan}"
@@ -99,7 +98,6 @@ if [[ ! -f "$ENV_FILE" ]]; then
     cat > "$ENV_FILE" <<EOF
 DATABASE_URL=postgres://${PG_USER}:${PG_PASSWORD}@127.0.0.1:${PG_PORT}/${PG_DB}
 BIND_ADDR=127.0.0.1:3011
-ALLOWED_SITES=${ALLOWED_SITES}
 ADMIN_TOKEN=${ADMIN_TOKEN}
 TRUST_PROXY_HEADERS=1
 RUST_LOG=info,sqlx=warn

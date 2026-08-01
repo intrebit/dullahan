@@ -51,6 +51,40 @@ promises metrics the data can't support:
 (`dur`) for time-on-page — there is no scroll-depth. Client time is `ts` (bigint
 ms, clamped to a sane window on ingest); server receive time is `received_at`.
 
+## Multi-tenancy (get this right too)
+
+Every row that belongs to a tenant carries `site_id`, and **two independent
+gates** protect it. Dropping either one is a cross-tenant leak:
+
+1. **Authorization** — `Scope::can_read_private` / `can_write` in `auth.rs`.
+   Stops a caller who may not touch this site at all.
+2. **Scoping** — a `site_id = $n` predicate in *every* statement. Stops an
+   *authorized* caller reaching another tenant's row through an id they guessed
+   or scraped. It is unconditional; it never depends on the registry.
+
+Rules that follow, all learned the hard way:
+
+- **Handlers take `SiteScope`, never a `site` field on their own query struct.**
+  The extractor authorizes before it yields a site, so a handler that forgets the
+  check has no site to pass to the DB layer and does not compile. This is why
+  `site` was *deleted* from the `/stats/*` query structs — don't add it back.
+- **Public endpoints still need the predicate.** `blog::view` / `products::view`
+  take no auth, but slugs are only unique per site, so without `site_id` one
+  anonymous ping to a shared slug increments every tenant's row.
+- **A wrong-tenant row id is `404`, not `403`.** 403 would confirm the id exists
+  somewhere. Likewise the scope check consults the *credential* before the
+  registry, so another tenant's site and a nonexistent one are indistinguishable.
+- **An empty `sites` table is permissive** (fresh installs, `#[sqlx::test]`).
+  Safe only because scoping is separate from admission: an empty registry yields
+  an empty list, never someone else's data. Don't couple the two.
+- **`open_mode` is decided once at startup**, never from the live registry — a DB
+  blip that empties the cache must not flip a locked-down deploy to open.
+- Token hashing is unsalted SHA-256 **on purpose**; see `docs/SECURITY.md` before
+  "fixing" it to argon2.
+- `ALLOWED_SITES` and `CONTACT_TO_<SITE>` were **removed** on 2026-08-01 (a
+  deliberate scope decision, as with the metric cut): the `sites` table is the
+  single source of truth for which tenants exist and where their mail goes.
+
 ## Stats API conventions
 
 - **Additive within the kept surface.** Day to day, treat the six endpoints below

@@ -12,19 +12,23 @@ Server env vars:
 |---|---|---|
 | `DATABASE_URL` | yes | — |
 | `BIND_ADDR` | no | `0.0.0.0:3001` |
-| `ADMIN_TOKEN` | recommended | unset (stats and blog reads are public; blog writes disabled) |
-| `ALLOWED_SITES` | no | unrestricted |
+| `ADMIN_TOKEN` | recommended | unset (stats and content reads are public; writes disabled) — this is the **operator** token: every tenant, plus the `/sites` registry |
 | `RESEND_API_KEY` | no | (disables email) |
 | `EMAIL_FROM` | no | — |
 | `EMAIL_FROM_NAME` | no | `dullahan` |
-| `CONTACT_TO` | no | (disables `/contact` for submissions that name no `site`) |
-| `CONTACT_TO_<SITE>` | no | (per-site recipient — `CONTACT_TO_MY_SITE` serves `"site": "my-site"`; an unconfigured site gets a 503, never `CONTACT_TO`) |
 | `STATS_ORIGINS` | no | `*` (any origin) |
 | `BEHIND_TLS` | no | `false` (disables HSTS) |
 | `TRUST_PROXY_HEADERS` | no | `false` (use TCP peer IP for rate limiting/session hashing) |
 | `SESSIONS_ENABLED` | no | `false` (no session IP/UA processing; opt-in for unique visitors, sessions, bounce rate, browser/OS) |
 | `LOG_FORMAT` | no | `text` (set `json` for structured logs) |
 | `RUST_LOG` | no | `info,sqlx=warn` |
+
+> **Tenancy:** sites live in the `sites` table, not in env vars. `ALLOWED_SITES`
+> and `CONTACT_TO_<SITE>` were removed — register a tenant with `POST /sites`
+> (see [`api.md`](api.md)) and set its `contact_to` / `email_from` there.
+> **While the `sites` table is empty every site id is admitted** on `/collect`
+> and `/stats/*`, so a fresh install works out of the box; the server warns at
+> startup until you register your tenants.
 
 > **Schema:** `0001_init.sql` creates everything and is applied on first start. Migrations are checksummed, so an applied one must never be edited — the server refuses to start if it changes.
 
@@ -33,7 +37,7 @@ Server env vars:
 The defaults are safe for a private deploy. For a public-internet host:
 
 - **Set `ADMIN_TOKEN`.** Without it `/stats/*` and blog reads are open. The server logs a warning at startup if unset; blog writes remain disabled until a token is configured.
-- **Set `ALLOWED_SITES`** if you only collect for known sites — otherwise any caller can write any `siteId` and bloat your DB.
+- **Register your tenants** in the `sites` table (`POST /sites`). While it is empty any caller can write any `siteId` and bloat your DB.
 - **Set `STATS_ORIGINS`** to your dashboard origin so a browser elsewhere can't read `/stats/*` responses even if the admin token leaks.
 - **Set `BEHIND_TLS=1`** once the deploy is fronted by HTTPS so the server emits `Strict-Transport-Security`. The other security headers (`X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`) ship unconditionally.
 - **Rate limiting** is built in (per-IP, in-process): `/collect` allows ~120/min burst 60, `/contact` allows ~5/min burst 3. By default the server keys on the TCP peer IP and ignores spoofable forwarded headers. If it runs behind a trusted reverse proxy, set `TRUST_PROXY_HEADERS=1` so rate limiting and session hashing use `x-forwarded-for`, then `x-real-ip`, then the TCP peer. The bundled Caddy installer sets this because Caddy is the only public peer. For a hostile public deploy, layer additional limits at Caddy/nginx.
@@ -98,9 +102,9 @@ Two things to know:
 
 `dullahan --digest` computes a plain-English, week-over-week summary (pageviews,
 unique visitors, bounce, avg time on page, top pages/referrers) for each site in
-`ALLOWED_SITES` and emails it to that site's `CONTACT_TO_<SITE>` recipient. It
-reuses the existing Resend config (`RESEND_API_KEY` / `EMAIL_FROM`); sites with
-no recipient are skipped. Preview without sending:
+the `sites` table and emails it to that site's `contact_to`. It reuses the
+Resend transport (`RESEND_API_KEY` / `EMAIL_FROM`), overridden per site by
+`email_from`; sites with no recipient, and suspended sites, are skipped. Preview without sending:
 
 ```bash
 /opt/dullahan/dullahan --digest --dry-run   # prints each email to stdout
