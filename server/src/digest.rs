@@ -47,29 +47,33 @@ pub async fn compute(pool: &PgPool, site: &str, now_ms: i64) -> sqlx::Result<Dig
 
 /// Send (or, when `dry_run`, print) a digest for every configured site.
 ///
-/// Requires `ALLOWED_SITES` — it is the list of sites to iterate. A site with
-/// no `CONTACT_TO_<SITE>` recipient is skipped (never delivered elsewhere,
-/// mirroring `/contact`). Errors on a single site are logged and do not abort
-/// the rest.
+/// Iterates the active tenants in the `sites` table. A site with no
+/// `contact_to` is skipped (never delivered elsewhere, mirroring `/contact`).
+/// Errors on a single site are logged and do not abort the rest.
+///
+/// This is a one-shot process (`dullahan --digest`), so it reads the registry
+/// directly rather than using the server's cache.
 pub async fn run(
     pool: &PgPool,
     mailer: Option<&Mailer>,
-    config: &Config,
+    _config: &Config,
     now_ms: i64,
     dry_run: bool,
 ) -> anyhow::Result<()> {
-    let Some(sites) = config.allowed_sites.as_ref() else {
-        anyhow::bail!("--digest requires ALLOWED_SITES to list the sites to report on");
-    };
+    let sites = crate::sites::load(pool).await?.active();
+    if sites.is_empty() {
+        anyhow::bail!("--digest found no active rows in `sites`; register a site first");
+    }
     if !dry_run && mailer.is_none() {
         anyhow::bail!(
             "--digest needs email configured (RESEND_API_KEY + EMAIL_FROM); use --dry-run to preview"
         );
     }
 
-    for site in sites {
-        let Some(to) = config.contact_recipient(Some(site)) else {
-            tracing::warn!(site, "no CONTACT_TO_<SITE> recipient; skipping digest");
+    for entry in sites {
+        let site = &*entry.id;
+        let Some(to) = entry.contact_to.as_deref() else {
+            tracing::warn!(site, "no contact_to recipient; skipping digest");
             continue;
         };
         let digest = match compute(pool, site, now_ms).await {
@@ -89,7 +93,14 @@ pub async fn run(
 
         match mailer
             .expect("mailer presence checked above")
-            .send_html(to, &subject, &html, None, None)
+            .send_html(
+                to,
+                &subject,
+                &html,
+                entry.email_from.as_deref(),
+                entry.email_from_name.as_deref(),
+                None,
+            )
             .await
         {
             Ok(()) => tracing::info!(site, to, "digest sent"),
