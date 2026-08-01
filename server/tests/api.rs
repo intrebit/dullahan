@@ -1,59 +1,60 @@
 use axum::body::Body;
 use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
-use dullahan::{config::Config, router, router_with_metrics, state::AppState};
+use dullahan::{AppState, config::Config, router, router_with_metrics};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
 use std::time::Duration;
 use tower::ServiceExt;
 
-fn test_state(
+mod common;
+use common::{SITE, Tenant, state_with_tenants};
+
+/// `tenants` replaces the old `ALLOWED_SITES` allowlist: `None` registers no
+/// sites at all (an empty registry is permissive, exactly as an unset
+/// ALLOWED_SITES was), `Some(list)` registers precisely those.
+async fn test_state(
     pool: PgPool,
     admin_token: Option<&str>,
-    allowed_sites: Option<Vec<String>>,
+    tenants: Option<Vec<&'static str>>,
 ) -> AppState {
-    state_with(pool, admin_token, allowed_sites, false)
+    state_with(pool, admin_token, tenants, false).await
 }
 
-fn state_with(
+async fn state_with(
     pool: PgPool,
     admin_token: Option<&str>,
-    allowed_sites: Option<Vec<String>>,
+    tenants: Option<Vec<&'static str>>,
     sessions_enabled: bool,
 ) -> AppState {
-    state_with_trust(pool, admin_token, allowed_sites, sessions_enabled, false)
+    state_with_trust(pool, admin_token, tenants, sessions_enabled, false).await
 }
 
-fn state_with_trust(
+async fn state_with_trust(
     pool: PgPool,
     admin_token: Option<&str>,
-    allowed_sites: Option<Vec<String>>,
+    tenants: Option<Vec<&'static str>>,
     sessions_enabled: bool,
     trust_proxy_headers: bool,
 ) -> AppState {
-    AppState {
-        config: Arc::new(Config {
-            bind_addr: "0.0.0.0:0".into(),
-            database_url: String::new(),
-            allowed_sites,
-            admin_token: admin_token.map(String::from),
-            email: None,
-            contact_to: None,
-            contact_to_sites: Default::default(),
-            stats_origins: None,
-            product_origins: None,
-            behind_tls: false,
-            trust_proxy_headers,
-            sessions_enabled,
-            shop_currency: "EUR".into(),
-        }),
+    let tenants: Vec<Tenant> = tenants
+        .unwrap_or_default()
+        .into_iter()
+        .map(Tenant::new)
+        .collect();
+    state_with_tenants(
         pool,
-        mailer: None,
-        salt_cache: dullahan::salt::new_cache(),
-    }
+        admin_token,
+        Config {
+            sessions_enabled,
+            trust_proxy_headers,
+            ..Config::default()
+        },
+        &tenants,
+    )
+    .await
 }
 
 fn with_peer(mut req: Request<Body>, ip: &str) -> Request<Body> {
@@ -119,7 +120,7 @@ async fn wait_for_count(pool: &PgPool, expected: i64) {
 
 #[sqlx::test]
 async fn health_returns_ok(pool: PgPool) {
-    let app = router(test_state(pool, None, None));
+    let app = router(test_state(pool, None, None).await);
     let resp = app
         .oneshot(Request::get("/health").body(Body::empty()).unwrap())
         .await
@@ -129,7 +130,7 @@ async fn health_returns_ok(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_inserts_pageview(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let resp = app
         .oneshot(post_collect(json!({
             "t": "pageview",
@@ -154,7 +155,7 @@ async fn collect_inserts_pageview(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_rejects_unknown_site_when_allowlisted(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, Some(vec!["site-a".into()])));
+    let app = router(test_state(pool.clone(), None, Some(vec!["site-a"])).await);
     let resp = app
         .oneshot(post_collect(json!({
             "t": "pageview",
@@ -174,7 +175,7 @@ async fn collect_rejects_unknown_site_when_allowlisted(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_rejects_oversize_path(pool: PgPool) {
-    let app = router(test_state(pool, None, None));
+    let app = router(test_state(pool, None, None).await);
     let resp = app
         .oneshot(post_collect(json!({
             "t": "pageview",
@@ -189,7 +190,7 @@ async fn collect_rejects_oversize_path(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_rejects_oversize_body(pool: PgPool) {
-    let app = router(test_state(pool, None, None));
+    let app = router(test_state(pool, None, None).await);
     // Stuff a giant `pr` to exceed the 16KB body limit.
     let big = "x".repeat(20_000);
     let resp = app
@@ -212,7 +213,7 @@ async fn collect_rejects_oversize_body(pool: PgPool) {
 
 #[sqlx::test]
 async fn stats_summary_requires_admin_token(pool: PgPool) {
-    let app = router(test_state(pool, Some("secret-token"), None));
+    let app = router(test_state(pool, Some("secret-token"), None).await);
     let resp = app
         .oneshot(
             Request::get("/stats/summary?site=site-1&days=30")
@@ -226,7 +227,7 @@ async fn stats_summary_requires_admin_token(pool: PgPool) {
 
 #[sqlx::test]
 async fn stats_summary_rejects_wrong_token(pool: PgPool) {
-    let app = router(test_state(pool, Some("secret-token"), None));
+    let app = router(test_state(pool, Some("secret-token"), None).await);
     let resp = app
         .oneshot(
             Request::get("/stats/summary?site=s&days=30")
@@ -241,7 +242,7 @@ async fn stats_summary_rejects_wrong_token(pool: PgPool) {
 
 #[sqlx::test]
 async fn stats_summary_accepts_correct_token(pool: PgPool) {
-    let app = router(test_state(pool, Some("secret-token"), None));
+    let app = router(test_state(pool, Some("secret-token"), None).await);
     let resp = app
         .oneshot(
             Request::get("/stats/summary?site=s&days=30")
@@ -259,7 +260,7 @@ async fn stats_summary_accepts_correct_token(pool: PgPool) {
 
 #[sqlx::test]
 async fn stats_summary_counts_inserted_pageviews(pool: PgPool) {
-    let state = test_state(pool.clone(), None, None);
+    let state = test_state(pool.clone(), None, None).await;
     let app = router(state);
 
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -294,7 +295,7 @@ async fn stats_summary_counts_inserted_pageviews(pool: PgPool) {
 
 #[sqlx::test]
 async fn security_headers_present(pool: PgPool) {
-    let app = router(test_state(pool, None, None));
+    let app = router(test_state(pool, None, None).await);
     let resp = app
         .oneshot(Request::get("/health").body(Body::empty()).unwrap())
         .await
@@ -316,7 +317,7 @@ async fn security_headers_present(pool: PgPool) {
 
 #[sqlx::test]
 async fn request_id_is_propagated_when_client_sends_one(pool: PgPool) {
-    let app = router(test_state(pool, None, None));
+    let app = router(test_state(pool, None, None).await);
     let resp = app
         .oneshot(
             Request::get("/health")
@@ -334,7 +335,7 @@ async fn metrics_endpoint_returns_prometheus_text(pool: PgPool) {
     // router_with_metrics installs a process-global Prometheus recorder, so
     // this is the only test that may exercise it. Other tests use the bare
     // router() to stay parallel-safe.
-    let app = router_with_metrics(test_state(pool, None, None));
+    let app = router_with_metrics(test_state(pool, None, None).await);
 
     // Generate a request so at least one counter exists.
     let _ = app
@@ -355,7 +356,7 @@ async fn metrics_endpoint_returns_prometheus_text(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_stores_utm_and_top_breaks_down(pool: PgPool) {
-    let state = test_state(pool.clone(), None, None);
+    let state = test_state(pool.clone(), None, None).await;
     let app = router(state);
 
     let now_ms = chrono::Utc::now().timestamp_millis();
@@ -392,7 +393,7 @@ async fn collect_stores_utm_and_top_breaks_down(pool: PgPool) {
 
 #[sqlx::test]
 async fn stats_events_lists_names_and_breaks_down_by_prop(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
 
     let now_ms = chrono::Utc::now().timestamp_millis();
     let events = [
@@ -464,7 +465,7 @@ async fn stats_events_lists_names_and_breaks_down_by_prop(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_round_trips_view_id(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let resp = app
         .oneshot(post_collect(json!({
             "t": "pageview",
@@ -487,7 +488,7 @@ async fn collect_round_trips_view_id(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_rejects_oversize_vid(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let resp = app
         .oneshot(post_collect(json!({
             "t": "event",
@@ -505,7 +506,7 @@ async fn collect_rejects_oversize_vid(pool: PgPool) {
 #[sqlx::test]
 async fn sessions_disabled_stores_no_visitor_data(pool: PgPool) {
     // Default config: even with IP + UA present, nothing is derived.
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let resp = app
         .oneshot(post_collect_ua(
             json!({"t": "pageview", "s": "site-1", "p": "/", "ts": 1_700_000_000_000_i64}),
@@ -526,7 +527,7 @@ async fn sessions_disabled_stores_no_visitor_data(pool: PgPool) {
 
 #[sqlx::test]
 async fn sessions_enabled_records_visitor_hash(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
+    let app = router(state_with(pool.clone(), None, None, true).await);
     let resp = app
         .oneshot(post_collect_ua(
             json!({"t": "pageview", "s": "site-1", "p": "/", "ts": 1_700_000_000_000_i64}),
@@ -547,7 +548,7 @@ async fn sessions_enabled_records_visitor_hash(pool: PgPool) {
 
 #[sqlx::test]
 async fn sessions_hash_ignores_forwarded_for_by_default(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
+    let app = router(state_with(pool.clone(), None, None, true).await);
     let now = chrono::Utc::now().timestamp_millis();
 
     for forwarded_for in ["1.1.1.1", "2.2.2.2"] {
@@ -574,7 +575,7 @@ async fn sessions_hash_ignores_forwarded_for_by_default(pool: PgPool) {
 
 #[sqlx::test]
 async fn sessions_hash_honors_forwarded_for_when_trusted(pool: PgPool) {
-    let app = router(state_with_trust(pool.clone(), None, None, true, true));
+    let app = router(state_with_trust(pool.clone(), None, None, true, true).await);
     let now = chrono::Utc::now().timestamp_millis();
 
     for forwarded_for in ["1.1.1.1", "2.2.2.2"] {
@@ -604,7 +605,7 @@ async fn sessions_hash_honors_forwarded_for_when_trusted(pool: PgPool) {
 
 #[sqlx::test]
 async fn summary_reports_avg_daily_visitors_and_bounce_rate_when_enabled(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
+    let app = router(state_with(pool.clone(), None, None, true).await);
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     // Visitor A (one IP): two pageviews → not a bounce.
@@ -645,7 +646,7 @@ async fn summary_reports_avg_daily_visitors_and_bounce_rate_when_enabled(pool: P
 
 #[sqlx::test]
 async fn summary_omits_session_metrics_when_disabled(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     app.clone()
         .oneshot(post_collect(json!({
             "t": "pageview", "s": "s", "p": "/", "ts": chrono::Utc::now().timestamp_millis()
@@ -727,7 +728,7 @@ async fn salt_prune_does_not_require_creating_today_salt(pool: PgPool) {
 
 #[sqlx::test]
 async fn pageleave_dur_is_clamped(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let resp = app
         .oneshot(post_collect(json!({
             "t": "pageleave",
@@ -750,7 +751,7 @@ async fn pageleave_dur_is_clamped(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_rate_limits_per_ip(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let body = json!({"t": "pageview", "s": "site-1", "p": "/", "ts": 1_700_000_000_000_i64});
 
     // Burst is 60; firing well past it from one IP must eventually 429.
@@ -783,7 +784,7 @@ async fn collect_rate_limits_per_ip(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_rate_limit_ignores_spoofed_forwarded_for_by_default(pool: PgPool) {
-    let app = router(test_state(pool, None, None));
+    let app = router(test_state(pool, None, None).await);
     let body = json!({"t": "pageview", "s": "site-1", "p": "/", "ts": 1_700_000_000_000_i64});
 
     let mut saw_429 = false;
@@ -813,7 +814,7 @@ async fn collect_rate_limit_ignores_spoofed_forwarded_for_by_default(pool: PgPoo
 
 #[sqlx::test]
 async fn collect_rate_limit_honors_forwarded_for_when_trusted(pool: PgPool) {
-    let app = router(state_with_trust(pool, None, None, false, true));
+    let app = router(state_with_trust(pool, None, None, false, true).await);
     let body = json!({"t": "pageview", "s": "site-1", "p": "/", "ts": 1_700_000_000_000_i64});
 
     for i in 0..80 {
@@ -839,7 +840,7 @@ async fn collect_rate_limit_honors_forwarded_for_when_trusted(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_clamps_absurd_future_ts(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let far_future = 32_503_680_000_000_i64; // ~year 3000
     let resp = app
         .oneshot(post_collect(json!({
@@ -873,7 +874,7 @@ async fn collect_clamps_absurd_future_ts(pool: PgPool) {
 
 #[sqlx::test]
 async fn summary_reports_avg_time_on_page(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let now = chrono::Utc::now().timestamp_millis();
     for dur in [1000, 2000, 3000] {
         app.clone()
@@ -900,7 +901,7 @@ async fn summary_reports_avg_time_on_page(pool: PgPool) {
 
 #[sqlx::test]
 async fn timeseries_reports_unique_visitors_when_enabled(pool: PgPool) {
-    let app = router(state_with(pool.clone(), None, None, true));
+    let app = router(state_with(pool.clone(), None, None, true).await);
     let now = chrono::Utc::now().timestamp_millis();
     app.clone()
         .oneshot(post_collect_ua(
@@ -934,7 +935,7 @@ async fn timeseries_reports_unique_visitors_when_enabled(pool: PgPool) {
 
 #[sqlx::test]
 async fn timeseries_omits_unique_visitors_when_disabled(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let now = chrono::Utc::now().timestamp_millis();
     app.clone()
         .oneshot(post_collect(
@@ -991,7 +992,7 @@ async fn timeseries_day_buckets_are_utc_stable(pool: PgPool) {
 
 #[sqlx::test]
 async fn channels_classifies_pageviews(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let now = chrono::Utc::now().timestamp_millis();
     app.clone()
         .oneshot(post_collect(
@@ -1036,7 +1037,7 @@ async fn channels_classifies_pageviews(pool: PgPool) {
 
 #[sqlx::test]
 async fn summary_compare_prev_returns_change(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let now = chrono::Utc::now().timestamp_millis();
     let day = 24 * 60 * 60 * 1000_i64;
     // current window [now-1d, now]: 2 pageviews
@@ -1075,7 +1076,7 @@ async fn summary_compare_prev_returns_change(pool: PgPool) {
 
 #[sqlx::test]
 async fn realtime_counts_distinct_active_views(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let now = chrono::Utc::now().timestamp_millis();
     // view v1 on /a: a pageview + a scroll event (one visit, two rows).
     app.clone()
@@ -1120,7 +1121,7 @@ async fn realtime_counts_distinct_active_views(pool: PgPool) {
 
 #[sqlx::test]
 async fn realtime_excludes_rows_outside_window(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let now = chrono::Utc::now().timestamp_millis();
     // Fresh row via /collect (received_at defaults to now()).
     app.clone()
@@ -1160,7 +1161,7 @@ async fn realtime_excludes_rows_outside_window(pool: PgPool) {
 async fn collect_coerces_unknown_device_to_null(pool: PgPool) {
     // A bad device value used to fail the DB CHECK and silently drop the whole
     // pageview (fire-and-forget insert); it must now be coerced to NULL.
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let resp = app
         .oneshot(post_collect(json!({
             "t": "pageview",
@@ -1183,7 +1184,7 @@ async fn collect_coerces_unknown_device_to_null(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_coerces_empty_vid_to_null(pool: PgPool) {
-    let app = router(test_state(pool.clone(), None, None));
+    let app = router(test_state(pool.clone(), None, None).await);
     let resp = app
         .oneshot(post_collect(json!({
             "t": "event",
@@ -1207,7 +1208,7 @@ async fn collect_coerces_empty_vid_to_null(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_rejects_oversize_event_prop_value(pool: PgPool) {
-    let app = router(test_state(pool, None, None));
+    let app = router(test_state(pool, None, None).await);
     let big = "x".repeat(2000);
     let resp = app
         .oneshot(post_collect(json!({
@@ -1225,7 +1226,7 @@ async fn collect_rejects_oversize_event_prop_value(pool: PgPool) {
 
 #[sqlx::test]
 async fn collect_rejects_too_many_event_props(pool: PgPool) {
-    let app = router(test_state(pool, None, None));
+    let app = router(test_state(pool, None, None).await);
     let mut props = serde_json::Map::new();
     for i in 0..50 {
         props.insert(format!("k{i}"), json!(1));
@@ -1248,26 +1249,16 @@ async fn collect_rejects_too_many_event_props(pool: PgPool) {
 async fn stats_cors_accepts_wildcard_origin(pool: PgPool) {
     // STATS_ORIGINS="*" must not panic the router. tower-http rejects a wildcard
     // inside allow_origin(<list>); a literal "*" means "any origin".
-    let state = AppState {
-        config: Arc::new(Config {
-            bind_addr: "0.0.0.0:0".into(),
-            database_url: String::new(),
-            allowed_sites: None,
-            admin_token: None,
-            email: None,
-            contact_to: None,
-            contact_to_sites: Default::default(),
-            stats_origins: Some(vec!["*".into()]),
-            product_origins: None,
-            behind_tls: false,
-            trust_proxy_headers: false,
-            sessions_enabled: false,
-            shop_currency: "EUR".into(),
-        }),
+    let state = state_with_tenants(
         pool,
-        mailer: None,
-        salt_cache: dullahan::salt::new_cache(),
-    };
+        None,
+        Config {
+            stats_origins: Some(vec!["*".into()]),
+            ..Config::default()
+        },
+        &[Tenant::new(SITE)],
+    )
+    .await;
     let app = router(state);
     let resp = app
         .oneshot(

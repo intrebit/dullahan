@@ -1,37 +1,30 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use dullahan::{config::Config, router, state::AppState};
+use dullahan::router;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use std::sync::Arc;
 use tower::ServiceExt;
 
-fn state(pool: PgPool, admin_token: Option<&str>) -> AppState {
-    AppState {
-        config: Arc::new(Config {
-            bind_addr: "0.0.0.0:0".into(),
-            database_url: String::new(),
-            allowed_sites: None,
-            admin_token: admin_token.map(String::from),
-            email: None,
-            contact_to: None,
-            contact_to_sites: Default::default(),
-            stats_origins: None,
-            product_origins: None,
-            behind_tls: false,
-            trust_proxy_headers: false,
-            sessions_enabled: false,
-            shop_currency: "EUR".into(),
-        }),
-        pool,
-        mailer: None,
-        salt_cache: dullahan::salt::new_cache(),
-    }
+mod common;
+use common::{OTHER, SITE, state, state_two_tenants};
+
+/// Every blog URL is tenant-scoped now, so the site is injected here rather than
+/// spelled out across ~40 URL literals. Tests that care which tenant they are
+/// addressing use `request_for`.
+fn request(method: &str, uri: &str, token: Option<&str>, body: Option<Value>) -> Request<Body> {
+    request_for(SITE, method, uri, token, body)
 }
 
-fn request(method: &str, uri: &str, token: Option<&str>, body: Option<Value>) -> Request<Body> {
+fn request_for(
+    site: &str,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> Request<Body> {
+    let uri = common::scoped(uri, site);
     let mut b = Request::builder().method(method).uri(uri);
     if let Some(t) = token {
         b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
@@ -51,9 +44,13 @@ async fn body_json(resp: axum::response::Response) -> Value {
 }
 
 async fn create_post(app: &Router, token: &str, body: Value) -> Value {
+    create_post_for(app, SITE, token, body).await
+}
+
+async fn create_post_for(app: &Router, site: &str, token: &str, body: Value) -> Value {
     let resp = app
         .clone()
-        .oneshot(request("POST", "/posts", Some(token), Some(body)))
+        .oneshot(request_for(site, "POST", "/posts", Some(token), Some(body)))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED, "create should succeed");
@@ -62,7 +59,7 @@ async fn create_post(app: &Router, token: &str, body: Value) -> Value {
 
 #[sqlx::test]
 async fn published_list_hides_drafts(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_post(
         &app,
         "t",
@@ -94,7 +91,7 @@ async fn published_list_hides_drafts(pool: PgPool) {
 
 #[sqlx::test]
 async fn status_all_requires_admin(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_post(
         &app,
         "t",
@@ -130,7 +127,7 @@ async fn status_all_requires_admin(pool: PgPool) {
 
 #[sqlx::test]
 async fn list_paginates_but_total_is_unbounded(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     for i in 0..3 {
         create_post(
             &app,
@@ -151,7 +148,7 @@ async fn list_paginates_but_total_is_unbounded(pool: PgPool) {
 
 #[sqlx::test]
 async fn single_draft_hidden_unless_admin(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_post(
         &app,
         "t",
@@ -187,7 +184,7 @@ async fn single_draft_hidden_unless_admin(pool: PgPool) {
 
 #[sqlx::test]
 async fn get_missing_is_404(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let resp = app
         .oneshot(request("GET", "/posts/nope", None, None))
         .await
@@ -197,7 +194,7 @@ async fn get_missing_is_404(pool: PgPool) {
 
 #[sqlx::test]
 async fn view_increments_published_and_noops_otherwise(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_post(
         &app,
         "t",
@@ -254,7 +251,7 @@ async fn view_increments_published_and_noops_otherwise(pool: PgPool) {
 
 #[sqlx::test]
 async fn create_then_get_round_trip(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let created = create_post(
         &app,
         "t",
@@ -295,7 +292,7 @@ async fn create_then_get_round_trip(pool: PgPool) {
 
 #[sqlx::test]
 async fn create_applies_defaults(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let created = create_post(
         &app,
         "t",
@@ -314,7 +311,7 @@ async fn create_applies_defaults(pool: PgPool) {
 
 #[sqlx::test]
 async fn create_duplicate_slug_is_409(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_post(
         &app,
         "t",
@@ -335,7 +332,7 @@ async fn create_duplicate_slug_is_409(pool: PgPool) {
 
 #[sqlx::test]
 async fn create_rejects_invalid_input(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     for body in [
         json!({"slug":"Bad Slug","title":"T","body_markdown":"x"}),
         json!({"slug":"ok","title":"  ","body_markdown":"x"}),
@@ -352,7 +349,7 @@ async fn create_rejects_invalid_input(pool: PgPool) {
 
 #[sqlx::test]
 async fn admin_endpoints_reject_missing_and_bad_token(pool: PgPool) {
-    let app = router(state(pool, Some("secret")));
+    let app = router(state(pool, Some("secret")).await);
     let valid = json!({"slug":"x","title":"T","body_markdown":"b"});
     let nil = "00000000-0000-0000-0000-000000000000";
 
@@ -383,7 +380,7 @@ async fn admin_endpoints_reject_missing_and_bad_token(pool: PgPool) {
 
 #[sqlx::test]
 async fn update_patches_subset_and_sets_updated_date(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let created = create_post(
         &app,
         "t",
@@ -430,7 +427,7 @@ async fn update_patches_subset_and_sets_updated_date(pool: PgPool) {
 
 #[sqlx::test]
 async fn delete_removes_then_404s(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let created = create_post(
         &app,
         "t",
@@ -462,7 +459,7 @@ async fn delete_removes_then_404s(pool: PgPool) {
 
 #[sqlx::test]
 async fn list_orders_by_pub_date_desc(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     // Insert out of chronological order; newest pub_date must come first.
     create_post(
         &app,
@@ -516,7 +513,7 @@ async fn list_orders_by_pub_date_desc(pool: PgPool) {
 
 #[sqlx::test]
 async fn malformed_uuid_is_404_on_patch_and_delete(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let resp = app
         .clone()
         .oneshot(request(
@@ -545,7 +542,7 @@ async fn malformed_uuid_is_404_on_patch_and_delete(pool: PgPool) {
 
 #[sqlx::test]
 async fn update_rename_to_existing_slug_is_409(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_post(
         &app,
         "t",
@@ -574,7 +571,7 @@ async fn update_rename_to_existing_slug_is_409(pool: PgPool) {
 
 #[sqlx::test]
 async fn update_validates_only_present_fields(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let created = create_post(
         &app,
         "t",
@@ -618,7 +615,7 @@ async fn update_validates_only_present_fields(pool: PgPool) {
 async fn open_mode_keeps_reads_open_but_refuses_writes(pool: PgPool) {
     // ADMIN_TOKEN unset: reads (including drafts) stay open, but writes are
     // refused — an unconfigured deploy can't be mutated by anonymous callers.
-    let app = router(state(pool.clone(), None));
+    let app = router(state(pool.clone(), None).await);
 
     // Writes are refused when no token is configured.
     let resp = app
@@ -663,7 +660,7 @@ async fn open_mode_keeps_reads_open_but_refuses_writes(pool: PgPool) {
 
 #[sqlx::test]
 async fn drafts_opt_in_only_on_literal_status_all(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_post(
         &app,
         "t",
@@ -695,7 +692,7 @@ async fn drafts_opt_in_only_on_literal_status_all(pool: PgPool) {
 
 #[sqlx::test]
 async fn list_limit_is_clamped(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     for i in 0..3 {
         create_post(
             &app,
@@ -726,4 +723,250 @@ async fn list_limit_is_clamped(pool: PgPool) {
         1,
         "limit 0 clamps to 1; got {body}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-tenant isolation.
+//
+// Two tenants, and — crucially — the *same slug* in both, because that is where
+// a missing `WHERE site_id` shows up as a wrong answer rather than an error.
+// Tenant `t` holds token-a, tenant `b` holds token-b, and "op" is the operator.
+// ---------------------------------------------------------------------------
+
+const OP: &str = "op";
+
+async fn seed_both(app: &Router) -> (Value, Value) {
+    let a = create_post_for(
+        app,
+        SITE,
+        OP,
+        json!({"slug": "hello", "title": "A's hello", "body_markdown": "a"}),
+    )
+    .await;
+    let b = create_post_for(
+        app,
+        OTHER,
+        OP,
+        json!({"slug": "hello", "title": "B's hello", "body_markdown": "b"}),
+    )
+    .await;
+    (a, b)
+}
+
+#[sqlx::test]
+async fn same_slug_in_two_sites_both_succeed(pool: PgPool) {
+    let app = router(state_two_tenants(pool, OP).await);
+    let (a, b) = seed_both(&app).await;
+    assert_eq!(a["site_id"], SITE);
+    assert_eq!(b["site_id"], OTHER);
+
+    // ...but a duplicate *within* one tenant is still a conflict.
+    let resp = app
+        .clone()
+        .oneshot(request_for(
+            SITE,
+            "POST",
+            "/posts",
+            Some(OP),
+            Some(json!({"slug": "hello", "title": "dup", "body_markdown": "x"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[sqlx::test]
+async fn list_never_leaks_across_tenants(pool: PgPool) {
+    let app = router(state_two_tenants(pool, OP).await);
+    seed_both(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(request_for(SITE, "GET", "/posts", None, None))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    // `total` is asserted as well as the array: the count is a second query and
+    // is the easy one to forget to scope.
+    assert_eq!(body["total"], 1, "got {body}");
+    assert_eq!(body["posts"][0]["title"], "A's hello");
+}
+
+#[sqlx::test]
+async fn get_returns_the_named_tenants_row(pool: PgPool) {
+    let app = router(state_two_tenants(pool, OP).await);
+    seed_both(&app).await;
+
+    // Anonymous read of the shared slug under `b` must return B's post, not
+    // whichever row Postgres happened to pick.
+    let resp = app
+        .clone()
+        .oneshot(request_for(OTHER, "GET", "/posts/hello", None, None))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["title"], "B's hello", "got {body}");
+}
+
+#[sqlx::test]
+async fn site_token_cannot_read_another_tenant(pool: PgPool) {
+    let app = router(state_two_tenants(pool, OP).await);
+    seed_both(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(request_for(OTHER, "GET", "/posts", Some("token-a"), None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+async fn site_token_cannot_create_in_another_tenant(pool: PgPool) {
+    let app = router(state_two_tenants(pool.clone(), OP).await);
+
+    let resp = app
+        .clone()
+        .oneshot(request_for(
+            OTHER,
+            "POST",
+            "/posts",
+            Some("token-a"),
+            Some(json!({"slug": "sneak", "title": "x", "body_markdown": "x"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // Assert the database, not just the status: a handler that 403s *after*
+    // writing is a real bug shape.
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM blog_posts WHERE site_id = $1")
+        .bind(OTHER)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[sqlx::test]
+async fn correct_uuid_under_the_wrong_tenant_is_a_404_and_mutates_nothing(pool: PgPool) {
+    let app = router(state_two_tenants(pool.clone(), OP).await);
+    let (_, b) = seed_both(&app).await;
+    let b_id = b["id"].as_str().unwrap();
+
+    // The important case: authorization *passes* (the operator may write `t`),
+    // and only the `AND site_id = $n` in the SQL prevents the cross-tenant write.
+    let resp = app
+        .clone()
+        .oneshot(request_for(
+            SITE,
+            "PATCH",
+            &format!("/posts/{b_id}"),
+            Some(OP),
+            Some(json!({"title": "hijacked"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "must not be 403");
+
+    let title: String = sqlx::query_scalar("SELECT title FROM blog_posts WHERE id = $1::uuid")
+        .bind(b_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(title, "B's hello", "B's row must be untouched");
+}
+
+#[sqlx::test]
+async fn delete_under_the_wrong_tenant_is_a_404_and_keeps_the_row(pool: PgPool) {
+    let app = router(state_two_tenants(pool.clone(), OP).await);
+    let (_, b) = seed_both(&app).await;
+    let b_id = b["id"].as_str().unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(request_for(
+            SITE,
+            "DELETE",
+            &format!("/posts/{b_id}"),
+            Some(OP),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM blog_posts WHERE id = $1::uuid")
+        .bind(b_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(n, 1, "B's row must still exist");
+}
+
+#[sqlx::test]
+async fn view_counter_only_increments_the_named_tenant(pool: PgPool) {
+    let app = router(state_two_tenants(pool.clone(), OP).await);
+    seed_both(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(request_for(SITE, "POST", "/posts/hello/view", None, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let views: Vec<(String, i64)> =
+        sqlx::query_as("SELECT site_id, views FROM blog_posts ORDER BY site_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        views,
+        vec![(OTHER.to_string(), 0), (SITE.to_string(), 1)],
+        "one anonymous ping must not bump every tenant's shared slug"
+    );
+}
+
+#[sqlx::test]
+async fn wrong_tenant_and_unknown_tenant_are_indistinguishable(pool: PgPool) {
+    let app = router(state_two_tenants(pool, OP).await);
+
+    // Both must look identical, or a 403-vs-404 split becomes an oracle for
+    // which tenants exist.
+    let real = app
+        .clone()
+        .oneshot(request_for(OTHER, "GET", "/posts", Some("token-a"), None))
+        .await
+        .unwrap();
+    let fake = app
+        .clone()
+        .oneshot(request_for(
+            "does-not-exist",
+            "GET",
+            "/posts",
+            Some("token-a"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(real.status(), fake.status());
+    assert_eq!(body_json(real).await, body_json(fake).await);
+}
+
+#[sqlx::test]
+async fn missing_site_param_is_a_400(pool: PgPool) {
+    let app = router(state_two_tenants(pool, OP).await);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/posts")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
