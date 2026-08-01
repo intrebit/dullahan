@@ -502,7 +502,7 @@ async fn cors_open_by_default_for_cross_origin_reads(pool: PgPool) {
     let app = router(state_cors(pool, None).await);
     let resp = app
         .oneshot(
-            Request::get("/products")
+            Request::get("/products?site=t")
                 .header(header::ORIGIN, "https://shop.example")
                 .body(Body::empty())
                 .unwrap(),
@@ -524,7 +524,7 @@ async fn cors_reflects_allowlisted_origin(pool: PgPool) {
     let app = router(state_cors(pool, Some(vec!["https://shop.example".into()])).await);
     let resp = app
         .oneshot(
-            Request::get("/products")
+            Request::get("/products?site=t")
                 .header(header::ORIGIN, "https://shop.example")
                 .body(Body::empty())
                 .unwrap(),
@@ -547,7 +547,11 @@ async fn cors_wildcard_origin_does_not_panic(pool: PgPool) {
     // (which tower-http rejects) — mirrors the stats wildcard guard.
     let app = router(state_cors(pool, Some(vec!["*".into()])).await);
     let resp = app
-        .oneshot(Request::get("/products").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/products?site=t")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
