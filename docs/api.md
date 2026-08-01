@@ -1,9 +1,13 @@
 # HTTP API reference
 
-dullahan exposes four HTTP surfaces: the **stats read API** (`/stats/*`,
+**Everything is tenant-scoped.** Sites live in the `sites` table; every content
+and stats endpoint takes a mandatory `?site=` and refuses a caller whose
+credential does not cover it. See [Tenants](#tenants-sites) below.
+
+dullahan exposes five HTTP surfaces: the **stats read API** (`/stats/*`,
 camelCase JSON, admin-gated), the **blog/content API** (`/posts`, snake_case
-JSON), the **contact form** (`/contact`), and ingest (`/collect`, which any
-browser tracker POSTs events to). Configuration and self-host hardening
+JSON), the **contact form** (`/contact`), ingest (`/collect`, which any
+browser tracker POSTs events to), and the **tenant registry** (`/sites`). Configuration and self-host hardening
 are in [`deploy.md`](deploy.md).
 
 ## Stats (`/stats/*`)
@@ -48,7 +52,7 @@ DELETE /posts/:id                                  # delete (admin) -> 204
 
 - **Auth.** Create / update / delete require a configured `ADMIN_TOKEN` and the same `Authorization: Bearer $ADMIN_TOKEN` as `/stats/*`; without a configured token, destructive blog writes return `401`. Blog reads follow the stats open-mode behavior: when `ADMIN_TOKEN` is unset, reads are open, including `status=all`.
 - **Drafts.** `draft=true` posts are hidden from the published list and return 404 on `GET /posts/:slug` unless the request is admin-authed. `POST /posts/:slug/view` only counts non-draft posts and is always a no-op `204` (missing/draft slug included) — no dedupe; debounce client-side.
-- **`POST /posts`** body: `{ slug, title, description?, author?, image?, body_markdown, draft?, pub_date? }`. `slug` must match `^[a-z0-9-]+$`; duplicate slug returns `409`. **`PATCH /posts/:id`** accepts any subset of those fields and sets `updated_date`.
+- **`POST /posts`** body: `{ slug, title, description?, author?, image?, body_markdown, draft?, pub_date? }`. `slug` must match `^[a-z0-9-]+$`; a duplicate slug **within the same site** returns `409` — two tenants may each own `about`. **`PATCH /posts/:id`** accepts any subset of those fields and sets `updated_date`.
 
 ## Product catalog (`/products`)
 
@@ -64,7 +68,7 @@ DELETE /products/:id                                  # delete (admin) -> 204
 ```
 
 - **View counter.** Each product carries a `views` count. `POST /products/:slug/view` increments it — call it from the frontend when a product page is shown (debounce client-side). Like the blog counter it only counts non-draft products and is always a no-op `204` (missing/draft slug included). This is how the owner sees which products are being viewed, without touching `/stats/*`.
-- **Fields.** `{ slug, title, description?, image?, price_cents?, available?, position?, draft? }` (`views` is read-only, server-managed). `price_cents` is an **integer count of minor units** (e.g. `1299` = €12.99 when `SHOP_CURRENCY=EUR`) — there is no per-product currency and no floating-point money. `slug` must match `^[a-z0-9-]+$`; a duplicate slug returns `409`. A negative `price_cents` returns `400`.
+- **Fields.** `{ slug, title, description?, image?, price_cents?, available?, position?, draft? }` (`views` is read-only, server-managed). `price_cents` is an **integer count of minor units** (e.g. `1299` = €12.99 when `SHOP_CURRENCY=EUR`) — there is no per-product currency and no floating-point money. `slug` must match `^[a-z0-9-]+$`; a duplicate slug **within the same site** returns `409`. A negative `price_cents` returns `400`.
 - **Listing.** Ordered by `position` ascending, then newest first. `available=false` (sold out) items are **still listed** — it's a display flag for the frontend, not a filter. `draft=true` items are hidden from the public list and 404 on `GET /products/:slug` unless admin-authed.
 - **Auth.** Create / update / delete require a configured `ADMIN_TOKEN` (same bearer as `/stats/*`); reads follow stats open-mode (open when no token is set). **`PATCH /products/:id`** accepts any subset of the create fields and sets `updated_date`.
 - **CORS.** `GET /products` and the `POST /products/:slug/view` ping send CORS headers so a storefront on another origin can read the catalog from the browser. Open to any origin by default (the published catalog is public); set `PRODUCT_ORIGINS` to restrict. Only `GET`/`POST` are exposed — the admin mutating verbs aren't reachable cross-origin from a browser.
@@ -76,21 +80,20 @@ to ~5/min per IP, and disabled — `503` — until the server has both an email
 transport (`RESEND_API_KEY` + `EMAIL_FROM`) and a recipient.
 
 ```
-POST /contact   {"name": "...", "email": "...", "message": "...", "site": "my-site"}  -> 201
+POST /contact   {"site": "my-site", "name": "...", "email": "...", "message": "..."}  -> 201
 ```
 
 `email` must look like an address, `name` ≤ 80 chars, `message` 10–2000 chars;
 anything else is a `400` with `{"message": "..."}`. The sender is the server's
 `EMAIL_FROM`, with the submitter's address as `Reply-To`.
 
-- **`site` is optional and selects the recipient.** Omit it and the mail goes to
-  `CONTACT_TO`. Send it and the mail goes to `CONTACT_TO_<SITE>`, so one server
-  can host several sites' forms. Site ids are matched case-insensitively with
-  non-alphanumerics as `_`, so `my-site`, `My.Site` and `MY_SITE` all read
-  `CONTACT_TO_MY_SITE`.
-- **An unrecognized `site` is refused with `503`, never delivered to
-  `CONTACT_TO`.** A typo'd or missing tenant config fails loudly (and logs a
-  warning) instead of leaking one site's enquiries into another's inbox.
+- **`site` is required** and selects the recipient — the tenant's `contact_to`
+  in the `sites` table. There is no server-wide default.
+- **An unregistered, suspended, or recipient-less `site` is refused with `503`,
+  never delivered elsewhere.** A typo'd tenant fails loudly (and logs a warning)
+  instead of leaking one site's enquiries into another's inbox.
+- The sender is the tenant's `email_from` if set, else the server's `EMAIL_FROM`;
+  the submitter's address is always the `Reply-To`.
 
 ## What gets collected
 
@@ -113,3 +116,47 @@ dullahan doesn't fingerprint or store IPs, but two channels can still leak PII i
 
 - **URL paths.** `dullahan` strips `?query` and `#hash` but not path segments. A path like `/users/jane@example.com/orders/42` will be stored verbatim. Strip or hash sensitive segments client-side before navigating, or pass a sanitized path to `dullahan.page(path)`.
 - **Custom event props.** `dullahan.track(name, props)` stores `props` as-is. Don't pass emails, names, or tokens. Use a stable `userId` hash if you need correlation.
+
+## Tenants (`/sites`)
+
+The tenant registry. **Operator scope only** — the global `ADMIN_TOKEN`. A
+per-site token gets `403` here; that boundary is what stops one tenant minting
+another. There is no CORS layer on these routes at all, so they are unreachable
+from a browser under any configuration.
+
+```
+GET    /sites             list
+POST   /sites             create -> 201, returns the token ONCE
+GET    /sites/:id         detail
+PATCH  /sites/:id         update name/domain/contact_to/email_from/email_from_name/active
+POST   /sites/:id/token   rotate -> returns the new token ONCE
+DELETE /sites/:id         204, or 409 while the tenant still owns content
+```
+
+- **`id`** must match `^[a-z0-9-]+$`, ≤ 64 chars. It is the same handle the
+  tracker sends as `s`, that `?site=` carries, and that scopes every row.
+- **Tokens are generated server-side** (256 bits, `dh_s_`-prefixed) and returned
+  exactly once, on create and on rotate. They are stored only as a hash and are
+  never recoverable — rotation is the recovery path. Reads return `token_last4`
+  so you can tell which credential is deployed where.
+- **Rotation is a hard cutover**: the old token stops working immediately, with
+  no grace window. A tenant running the old token will get `401`s until it is
+  redeployed.
+- **`active: false`** suspends a tenant: its token stops resolving, `/collect`
+  refuses its events, and the weekly digest skips it. Data is retained.
+- **Delete refuses (`409`) while the tenant owns content**, so offboarding is an
+  explicit purge rather than a silent cascade.
+
+### Scopes
+
+| Credential | Content + stats | `/sites` |
+|---|---|---|
+| Global `ADMIN_TOKEN` (operator) | every site | yes |
+| Per-site token | its own site only | no (`403`) |
+| None | public reads only | no (`401`) |
+| No `ADMIN_TOKEN` configured | reads open, all writes refused | no (`401`) |
+
+A caller naming a site its credential does not cover gets `403` — and that
+response is byte-identical whether the site belongs to another tenant or does
+not exist, so it is not an existence oracle. A correct row id addressed under the
+wrong site returns `404`, never `403`, for the same reason.
