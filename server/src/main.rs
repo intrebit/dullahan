@@ -50,8 +50,9 @@ async fn main() -> anyhow::Result<()> {
     // Decided once, here, and never recomputed from the live registry: if this
     // were derived per request from "is the cache empty", a transient DB failure
     // that emptied the cache would silently flip a locked-down deploy to
-    // world-readable.
-    let open_mode = config.admin_token.is_none() && site_count == 0;
+    // world-readable. See AppState::open_mode for why the registry size is not
+    // part of the condition.
+    let open_mode = config.admin_token.is_none();
 
     if config.admin_token.is_none() {
         tracing::warn!(

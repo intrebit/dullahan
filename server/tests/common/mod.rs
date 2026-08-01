@@ -86,8 +86,8 @@ pub async fn state_with_tenants(
     sites::refresh(&pool, &cache).await.expect("load registry");
 
     let admin_token_hash = admin_token.map(sites::token_digest);
-    // Mirrors main.rs: open mode needs both an unset ADMIN_TOKEN and no tenants.
-    let open_mode = admin_token.is_none() && tenants.is_empty();
+    // Mirrors main.rs.
+    let open_mode = admin_token.is_none();
 
     AppState {
         config: Arc::new(Config {
