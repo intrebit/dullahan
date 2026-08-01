@@ -11,10 +11,11 @@ pub struct ContactPayload {
     pub email: String,
     pub name: String,
     pub message: String,
-    /// Tenant this submission belongs to. Omitted by single-tenant callers,
-    /// which then get the server's default `CONTACT_TO` recipient.
-    #[serde(default)]
-    pub site: Option<String>,
+    /// Tenant this submission belongs to. **Required** — there is no default
+    /// recipient any more. An omitted or unregistered site is refused rather
+    /// than delivered, so one tenant's enquiries can never land in another's
+    /// inbox.
+    pub site: String,
 }
 
 pub async fn submit(
@@ -38,23 +39,38 @@ pub async fn submit(
 
     // Recipient before transport, so a tenant with no configured address is
     // reported as such even on a server with email switched off entirely.
-    let site = payload
-        .site
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    let to = state.config.contact_recipient(site).ok_or_else(|| {
-        if let Some(site) = site {
-            tracing::warn!(site, "no contact recipient configured for site");
-        }
-        service_unavailable("contact recipient not configured")
-    })?;
+    let site_id = payload.site.trim();
+    let site = crate::sites::snapshot(&state.sites)
+        .get(site_id)
+        .filter(|s| s.active)
+        .cloned();
+    let Some(site) = site else {
+        tracing::warn!(site = site_id, "contact submission for an unknown site");
+        return Err(service_unavailable("contact recipient not configured"));
+    };
+    let Some(to) = site.contact_to.as_deref() else {
+        tracing::warn!(site = site_id, "no contact_to configured for site");
+        return Err(service_unavailable("contact recipient not configured"));
+    };
     let mailer = state
         .mailer
         .as_ref()
         .ok_or_else(|| service_unavailable("email transport not configured"))?;
 
-    if let Err(err) = mailer.send_contact(to, name, email, message).await {
+    // Per-site sender when the tenant has one, else the server's EMAIL_FROM.
+    // Note a per-site address still requires the global transport to exist —
+    // `Mailer` is only built when RESEND_API_KEY and EMAIL_FROM are both set.
+    if let Err(err) = mailer
+        .send_contact(
+            to,
+            name,
+            email,
+            message,
+            site.email_from.as_deref(),
+            site.email_from_name.as_deref(),
+        )
+        .await
+    {
         tracing::error!(error = %err, "contact email send failed");
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -90,7 +106,7 @@ fn service_unavailable(msg: &str) -> (StatusCode, Json<ErrorBody>) {
     )
 }
 
-fn email_looks_valid(s: &str) -> bool {
+pub(crate) fn email_looks_valid(s: &str) -> bool {
     if s.is_empty() || s.len() > 254 || s.contains(char::is_whitespace) {
         return false;
     }

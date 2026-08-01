@@ -1,64 +1,54 @@
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
-use dullahan::{config::Config, router, state::AppState};
+use dullahan::{AppState, config::Config, router};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use std::sync::Arc;
 use tower::ServiceExt;
 
-fn state_cur(pool: PgPool, admin_token: Option<&str>, currency: &str) -> AppState {
-    AppState {
-        config: Arc::new(Config {
-            bind_addr: "0.0.0.0:0".into(),
-            database_url: String::new(),
-            allowed_sites: None,
-            admin_token: admin_token.map(String::from),
-            email: None,
-            contact_to: None,
-            contact_to_sites: Default::default(),
-            stats_origins: None,
-            product_origins: None,
-            behind_tls: false,
-            trust_proxy_headers: false,
-            sessions_enabled: false,
+mod common;
+use common::{OTHER, SITE, Tenant, state, state_no_tenants, state_two_tenants, state_with_tenants};
+
+async fn state_cur(pool: PgPool, admin_token: Option<&str>, currency: &str) -> AppState {
+    state_with_tenants(
+        pool,
+        admin_token,
+        Config {
             shop_currency: currency.into(),
-        }),
+            ..Config::default()
+        },
+        &[Tenant::new(SITE)],
+    )
+    .await
+}
+
+async fn state_cors(pool: PgPool, product_origins: Option<Vec<String>>) -> AppState {
+    state_with_tenants(
         pool,
-        mailer: None,
-        salt_cache: dullahan::salt::new_cache(),
-    }
-}
-
-fn state(pool: PgPool, admin_token: Option<&str>) -> AppState {
-    state_cur(pool, admin_token, "EUR")
-}
-
-fn state_cors(pool: PgPool, product_origins: Option<Vec<String>>) -> AppState {
-    AppState {
-        config: Arc::new(Config {
-            bind_addr: "0.0.0.0:0".into(),
-            database_url: String::new(),
-            allowed_sites: None,
-            admin_token: None,
-            email: None,
-            contact_to: None,
-            contact_to_sites: Default::default(),
-            stats_origins: None,
+        None,
+        Config {
             product_origins,
-            behind_tls: false,
-            trust_proxy_headers: false,
-            sessions_enabled: false,
-            shop_currency: "EUR".into(),
-        }),
-        pool,
-        mailer: None,
-        salt_cache: dullahan::salt::new_cache(),
-    }
+            ..Config::default()
+        },
+        &[Tenant::new(SITE)],
+    )
+    .await
 }
 
+/// The site is injected here rather than repeated across ~30 URL literals.
 fn request(method: &str, uri: &str, token: Option<&str>, body: Option<Value>) -> Request<Body> {
+    request_for(SITE, method, uri, token, body)
+}
+
+fn request_for(
+    site: &str,
+    method: &str,
+    uri: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> Request<Body> {
+    let uri = common::scoped(uri, site);
     let mut b = Request::builder().method(method).uri(uri);
     if let Some(t) = token {
         b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
@@ -77,6 +67,22 @@ async fn body_json(resp: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
+async fn create_product_for(app: &Router, site: &str, token: &str, body: Value) -> Value {
+    let resp = app
+        .clone()
+        .oneshot(request_for(
+            site,
+            "POST",
+            "/products",
+            Some(token),
+            Some(body),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "create should succeed");
+    body_json(resp).await
+}
+
 async fn create_product(app: &Router, token: &str, body: Value) -> Value {
     let resp = app
         .clone()
@@ -89,7 +95,7 @@ async fn create_product(app: &Router, token: &str, body: Value) -> Value {
 
 #[sqlx::test]
 async fn create_then_get_round_trip(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let created = create_product(
         &app,
         "t",
@@ -128,7 +134,7 @@ async fn create_then_get_round_trip(pool: PgPool) {
 
 #[sqlx::test]
 async fn create_applies_defaults(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let created = create_product(&app, "t", json!({"slug":"min","title":"Min"})).await;
     assert_eq!(created["description"], "");
     assert_eq!(created["price_cents"], 0, "no price defaults to 0");
@@ -140,7 +146,7 @@ async fn create_applies_defaults(pool: PgPool) {
 
 #[sqlx::test]
 async fn currency_comes_from_config(pool: PgPool) {
-    let app = router(state_cur(pool, Some("t"), "USD"));
+    let app = router(state_cur(pool, Some("t"), "USD").await);
     let created =
         create_product(&app, "t", json!({"slug":"p","title":"P","price_cents":500})).await;
     assert_eq!(created["currency"], "USD", "SHOP_CURRENCY plumbs through");
@@ -148,7 +154,7 @@ async fn currency_comes_from_config(pool: PgPool) {
 
 #[sqlx::test]
 async fn published_list_hides_drafts(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_product(&app, "t", json!({"slug":"live","title":"Live"})).await;
     create_product(
         &app,
@@ -171,7 +177,7 @@ async fn published_list_hides_drafts(pool: PgPool) {
 
 #[sqlx::test]
 async fn sold_out_items_still_listed(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_product(
         &app,
         "t",
@@ -194,7 +200,7 @@ async fn sold_out_items_still_listed(pool: PgPool) {
 
 #[sqlx::test]
 async fn view_increments_published_and_noops_otherwise(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_product(&app, "t", json!({"slug":"seen","title":"Seen"})).await;
     create_product(&app, "t", json!({"slug":"hidden","title":"H","draft":true})).await;
 
@@ -241,7 +247,7 @@ async fn view_increments_published_and_noops_otherwise(pool: PgPool) {
 
 #[sqlx::test]
 async fn status_all_requires_admin(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_product(&app, "t", json!({"slug":"p","title":"P"})).await;
     create_product(&app, "t", json!({"slug":"d","title":"D","draft":true})).await;
 
@@ -265,7 +271,7 @@ async fn status_all_requires_admin(pool: PgPool) {
 
 #[sqlx::test]
 async fn single_draft_hidden_unless_admin(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_product(&app, "t", json!({"slug":"secret","title":"S","draft":true})).await;
 
     let resp = app
@@ -288,7 +294,7 @@ async fn single_draft_hidden_unless_admin(pool: PgPool) {
 
 #[sqlx::test]
 async fn list_orders_by_position_then_recency(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_product(&app, "t", json!({"slug":"c","title":"C","position":2})).await;
     create_product(&app, "t", json!({"slug":"a","title":"A","position":0})).await;
     create_product(&app, "t", json!({"slug":"b","title":"B","position":1})).await;
@@ -310,7 +316,7 @@ async fn list_orders_by_position_then_recency(pool: PgPool) {
 
 #[sqlx::test]
 async fn create_rejects_invalid_input(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     for body in [
         json!({"slug":"Bad Slug","title":"T"}),
         json!({"slug":"ok","title":"  "}),
@@ -327,7 +333,7 @@ async fn create_rejects_invalid_input(pool: PgPool) {
 
 #[sqlx::test]
 async fn create_duplicate_slug_is_409(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     create_product(&app, "t", json!({"slug":"dup","title":"A"})).await;
     let resp = app
         .oneshot(request(
@@ -343,7 +349,7 @@ async fn create_duplicate_slug_is_409(pool: PgPool) {
 
 #[sqlx::test]
 async fn update_patches_subset_and_sets_updated_date(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let created = create_product(
         &app,
         "t",
@@ -389,7 +395,7 @@ async fn update_patches_subset_and_sets_updated_date(pool: PgPool) {
 
 #[sqlx::test]
 async fn update_rejects_bad_present_fields(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let created = create_product(&app, "t", json!({"slug":"v","title":"T"})).await;
     let id = created["id"].as_str().unwrap().to_string();
 
@@ -414,7 +420,7 @@ async fn update_rejects_bad_present_fields(pool: PgPool) {
 
 #[sqlx::test]
 async fn delete_removes_then_404s(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let created = create_product(&app, "t", json!({"slug":"del","title":"D"})).await;
     let id = created["id"].as_str().unwrap().to_string();
 
@@ -444,7 +450,7 @@ async fn delete_removes_then_404s(pool: PgPool) {
 
 #[sqlx::test]
 async fn admin_endpoints_reject_missing_and_bad_token(pool: PgPool) {
-    let app = router(state(pool, Some("secret")));
+    let app = router(state(pool, Some("secret")).await);
     let valid = json!({"slug":"x","title":"T"});
     let nil = "00000000-0000-0000-0000-000000000000";
     let cases = [
@@ -467,7 +473,7 @@ async fn admin_endpoints_reject_missing_and_bad_token(pool: PgPool) {
 
 #[sqlx::test]
 async fn malformed_uuid_is_404_on_patch_and_delete(pool: PgPool) {
-    let app = router(state(pool, Some("t")));
+    let app = router(state(pool, Some("t")).await);
     let resp = app
         .clone()
         .oneshot(request(
@@ -493,10 +499,10 @@ async fn malformed_uuid_is_404_on_patch_and_delete(pool: PgPool) {
 #[sqlx::test]
 async fn cors_open_by_default_for_cross_origin_reads(pool: PgPool) {
     // No PRODUCT_ORIGINS => any origin may read the catalog (mirrors /collect).
-    let app = router(state_cors(pool, None));
+    let app = router(state_cors(pool, None).await);
     let resp = app
         .oneshot(
-            Request::get("/products")
+            Request::get("/products?site=t")
                 .header(header::ORIGIN, "https://shop.example")
                 .body(Body::empty())
                 .unwrap(),
@@ -515,10 +521,10 @@ async fn cors_open_by_default_for_cross_origin_reads(pool: PgPool) {
 
 #[sqlx::test]
 async fn cors_reflects_allowlisted_origin(pool: PgPool) {
-    let app = router(state_cors(pool, Some(vec!["https://shop.example".into()])));
+    let app = router(state_cors(pool, Some(vec!["https://shop.example".into()])).await);
     let resp = app
         .oneshot(
-            Request::get("/products")
+            Request::get("/products?site=t")
                 .header(header::ORIGIN, "https://shop.example")
                 .body(Body::empty())
                 .unwrap(),
@@ -539,9 +545,13 @@ async fn cors_reflects_allowlisted_origin(pool: PgPool) {
 async fn cors_wildcard_origin_does_not_panic(pool: PgPool) {
     // PRODUCT_ORIGINS="*" must collapse to Any, not be passed to allow_origin(list)
     // (which tower-http rejects) — mirrors the stats wildcard guard.
-    let app = router(state_cors(pool, Some(vec!["*".into()])));
+    let app = router(state_cors(pool, Some(vec!["*".into()])).await);
     let resp = app
-        .oneshot(Request::get("/products").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::get("/products?site=t")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -549,7 +559,7 @@ async fn cors_wildcard_origin_does_not_panic(pool: PgPool) {
 
 #[sqlx::test]
 async fn cors_preflight_allows_get_and_post_not_delete(pool: PgPool) {
-    let app = router(state_cors(pool, None));
+    let app = router(state_cors(pool, None).await);
     let resp = app
         .oneshot(
             Request::builder()
@@ -587,7 +597,7 @@ async fn cors_preflight_allows_get_and_post_not_delete(pool: PgPool) {
 #[sqlx::test]
 async fn open_mode_keeps_reads_open_but_refuses_writes(pool: PgPool) {
     // ADMIN_TOKEN unset: reads stay open, writes refused (secure by default).
-    let app = router(state(pool.clone(), None));
+    let app = router(state(pool.clone(), None).await);
     let resp = app
         .clone()
         .oneshot(request(
@@ -604,7 +614,8 @@ async fn open_mode_keeps_reads_open_but_refuses_writes(pool: PgPool) {
         "writes refused unconfigured"
     );
 
-    sqlx::query("INSERT INTO products (slug, title) VALUES ('seeded', 'Seeded')")
+    sqlx::query("INSERT INTO products (site_id, slug, title) VALUES ($1, 'seeded', 'Seeded')")
+        .bind(SITE)
         .execute(&pool)
         .await
         .unwrap();
@@ -617,4 +628,139 @@ async fn open_mode_keeps_reads_open_but_refuses_writes(pool: PgPool) {
         StatusCode::OK,
         "reads open in unconfigured mode"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-tenant isolation — mirrors tests/blog.rs. Same slug in both tenants,
+// because that is where a missing `WHERE site_id` gives a wrong answer rather
+// than an error.
+// ---------------------------------------------------------------------------
+
+const OP: &str = "op";
+
+async fn seed_both(app: &Router) -> (Value, Value) {
+    let a = create_product_for(app, SITE, OP, json!({"slug": "mug", "title": "A's mug"})).await;
+    let b = create_product_for(app, OTHER, OP, json!({"slug": "mug", "title": "B's mug"})).await;
+    (a, b)
+}
+
+#[sqlx::test]
+async fn same_slug_in_two_sites_both_succeed(pool: PgPool) {
+    let app = router(state_two_tenants(pool, OP).await);
+    let (a, b) = seed_both(&app).await;
+    assert_eq!(a["site_id"], SITE);
+    assert_eq!(b["site_id"], OTHER);
+}
+
+#[sqlx::test]
+async fn list_never_leaks_across_tenants(pool: PgPool) {
+    let app = router(state_two_tenants(pool, OP).await);
+    seed_both(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(request_for(SITE, "GET", "/products", None, None))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["total"], 1, "got {body}");
+    assert_eq!(body["products"][0]["title"], "A's mug");
+}
+
+#[sqlx::test]
+async fn get_returns_the_named_tenants_row(pool: PgPool) {
+    let app = router(state_two_tenants(pool, OP).await);
+    seed_both(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(request_for(OTHER, "GET", "/products/mug", None, None))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["title"], "B's mug", "got {body}");
+}
+
+#[sqlx::test]
+async fn site_token_cannot_reach_another_tenant(pool: PgPool) {
+    let app = router(state_two_tenants(pool, OP).await);
+    seed_both(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(request_for(
+            OTHER,
+            "GET",
+            "/products",
+            Some("token-a"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test]
+async fn correct_uuid_under_the_wrong_tenant_is_a_404_and_mutates_nothing(pool: PgPool) {
+    let app = router(state_two_tenants(pool.clone(), OP).await);
+    let (_, b) = seed_both(&app).await;
+    let b_id = b["id"].as_str().unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(request_for(
+            SITE,
+            "PATCH",
+            &format!("/products/{b_id}"),
+            Some(OP),
+            Some(json!({"title": "hijacked"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND, "must not be 403");
+
+    let title: String = sqlx::query_scalar("SELECT title FROM products WHERE id = $1::uuid")
+        .bind(b_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(title, "B's mug");
+}
+
+#[sqlx::test]
+async fn view_counter_only_increments_the_named_tenant(pool: PgPool) {
+    let app = router(state_two_tenants(pool.clone(), OP).await);
+    seed_both(&app).await;
+
+    let resp = app
+        .clone()
+        .oneshot(request_for(SITE, "POST", "/products/mug/view", None, None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let views: Vec<(String, i64)> =
+        sqlx::query_as("SELECT site_id, views FROM products ORDER BY site_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(views, vec![(OTHER.to_string(), 0), (SITE.to_string(), 1)]);
+}
+
+#[sqlx::test]
+async fn unknown_site_on_create_is_a_400_not_a_500(pool: PgPool) {
+    // The registry is permissive while empty, but the foreign key is not.
+    let app = router(state_no_tenants(pool, Some(OP)).await);
+    let resp = app
+        .clone()
+        .oneshot(request_for(
+            "ghost",
+            "POST",
+            "/products",
+            Some(OP),
+            Some(json!({"slug": "x", "title": "x"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

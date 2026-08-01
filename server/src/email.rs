@@ -31,15 +31,27 @@ impl Mailer {
         }
     }
 
-    fn build_from_header(&self, display_name: Option<&str>) -> String {
+    /// Build the `From:` header, optionally overriding the address and/or the
+    /// display name for a specific tenant.
+    ///
+    /// The address is sanitized as well as the name: it is interpolated raw into
+    /// a header, so a CR/LF in a per-site `email_from` would be header
+    /// injection. That value is operator-controlled today but becomes
+    /// admin-API-controlled with the `/sites` surface, so it is filtered here
+    /// as well as CHECKed in the database.
+    fn build_from_header(&self, address: Option<&str>, display_name: Option<&str>) -> String {
+        let addr = address
+            .map(sanitize_address)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| sanitize_address(&self.config.from));
         let name = display_name
             .map(sanitize_display_name)
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| sanitize_display_name(&self.config.from_name));
         if name.is_empty() {
-            self.config.from.clone()
+            addr
         } else {
-            format!("{name} <{}>", self.config.from)
+            format!("{name} <{addr}>")
         }
     }
 
@@ -48,11 +60,12 @@ impl Mailer {
         to: &str,
         subject: &str,
         html: &str,
+        from_address: Option<&str>,
         from_display: Option<&str>,
         reply_to: Option<&str>,
     ) -> Result<(), EmailError> {
         let mut payload = json!({
-            "from": self.build_from_header(from_display),
+            "from": self.build_from_header(from_address, from_display),
             "to": [to],
             "subject": subject,
             "html": html,
@@ -67,9 +80,11 @@ impl Mailer {
         name: &str,
         reply_email: &str,
         message: &str,
+        from_address: Option<&str>,
+        from_display: Option<&str>,
     ) -> Result<(), EmailError> {
         let payload = json!({
-            "from": self.build_from_header(None),
+            "from": self.build_from_header(from_address, from_display),
             "to": [to],
             "reply_to": reply_email,
             "subject": format!("New contact form submission from {name}"),
@@ -113,6 +128,16 @@ fn attach_reply_to(payload: &mut serde_json::Value, reply_to: Option<&str>) {
     }
 }
 
+/// Strip anything that could terminate or inject a header. Applied to the
+/// address as well as the display name — see `build_from_header`.
+fn sanitize_address(addr: &str) -> String {
+    addr.chars()
+        .filter(|c| !matches!(c, '<' | '>' | '"' | '\r' | '\n' | ',' | ' '))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn sanitize_display_name(name: &str) -> String {
     name.chars()
         .filter(|c| !matches!(c, '<' | '>' | '"' | '\r' | '\n' | ','))
@@ -123,7 +148,7 @@ fn sanitize_display_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_display_name;
+    use super::{sanitize_address, sanitize_display_name};
 
     #[test]
     fn sanitize_strips_brackets_quotes_commas_crlf() {
@@ -136,5 +161,19 @@ mod tests {
         );
         assert_eq!(sanitize_display_name(""), "");
         assert_eq!(sanitize_display_name("   spaces   "), "spaces");
+    }
+
+    #[test]
+    fn sanitize_address_blocks_header_injection() {
+        assert_eq!(
+            sanitize_address("no-reply@example.com"),
+            "no-reply@example.com"
+        );
+        assert_eq!(
+            sanitize_address("ok@x.com\r\nBcc: leak@evil.com"),
+            "ok@x.comBcc:leak@evil.com",
+            "a CRLF must not survive into a From: header"
+        );
+        assert_eq!(sanitize_address("a <b@c.com>"), "ab@c.com");
     }
 }

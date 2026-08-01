@@ -19,10 +19,11 @@ pub async fn collect(
     }
     payload.clamp_ts(chrono::Utc::now().timestamp_millis());
 
+    // Admission against the cached tenant registry — no DB round trip on this
+    // hot path, and cheaper than the linear scan over `ALLOWED_SITES` it
+    // replaces. Setting a site inactive stops its collection within one refresh.
     let site_id = payload.site_id();
-    if let Some(allowed) = &state.config.allowed_sites
-        && !allowed.iter().any(|s| s == site_id)
-    {
+    if !crate::sites::snapshot(&state.sites).is_active(site_id) {
         return StatusCode::FORBIDDEN;
     }
 
