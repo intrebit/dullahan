@@ -636,8 +636,10 @@ async fn open_mode_keeps_reads_open_but_refuses_writes(pool: PgPool) {
 
     // Seed a draft directly (writes are gated) to confirm reads stay open.
     sqlx::query(
-        "INSERT INTO blog_posts (slug, title, body_markdown, draft) VALUES ('d', 'D', 'x', true)",
+        "INSERT INTO blog_posts (site_id, slug, title, body_markdown, draft) \
+         VALUES ($1, 'd', 'D', 'x', true)",
     )
+    .bind(SITE)
     .execute(&pool)
     .await
     .unwrap();

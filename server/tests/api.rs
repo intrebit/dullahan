@@ -10,7 +10,7 @@ use std::time::Duration;
 use tower::ServiceExt;
 
 mod common;
-use common::{SITE, Tenant, state_with_tenants};
+use common::{Tenant, state_with_tenants};
 
 /// `tenants` replaces the old `ALLOWED_SITES` allowlist: `None` registers no
 /// sites at all (an empty registry is permissive, exactly as an unset
@@ -1256,7 +1256,9 @@ async fn stats_cors_accepts_wildcard_origin(pool: PgPool) {
             stats_origins: Some(vec!["*".into()]),
             ..Config::default()
         },
-        &[Tenant::new(SITE)],
+        // No tenants: an empty registry is permissive, matching the unset
+        // ALLOWED_SITES this test used to rely on.
+        &[],
     )
     .await;
     let app = router(state);

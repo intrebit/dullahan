@@ -610,7 +610,8 @@ async fn open_mode_keeps_reads_open_but_refuses_writes(pool: PgPool) {
         "writes refused unconfigured"
     );
 
-    sqlx::query("INSERT INTO products (slug, title) VALUES ('seeded', 'Seeded')")
+    sqlx::query("INSERT INTO products (site_id, slug, title) VALUES ($1, 'seeded', 'Seeded')")
+        .bind(SITE)
         .execute(&pool)
         .await
         .unwrap();
