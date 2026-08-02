@@ -87,7 +87,16 @@ The defaults are safe for a private deploy. For a public-internet host:
 - **Set `BEHIND_TLS=1`** once the deploy is fronted by HTTPS so the server emits `Strict-Transport-Security`. The other security headers (`X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`) ship unconditionally.
 - **Rate limiting** is built in (per-IP, in-process): `/collect` allows ~120/min burst 60, `/contact` allows ~5/min burst 3. By default the server keys on the TCP peer IP and ignores spoofable forwarded headers. If it runs behind a trusted reverse proxy, set `TRUST_PROXY_HEADERS=1` so rate limiting and session hashing use `x-forwarded-for`, then `x-real-ip`, then the TCP peer. The bundled Caddy installer sets this because Caddy is the only public peer. For a hostile public deploy, layer additional limits at Caddy/nginx.
 - **Consider `RETENTION_DAYS`.** Nothing deletes analytics events by default, so a busy site's `analytics_events` grows until the disk fills — and every `/stats/*` query slows as it does. Data minimisation also argues for setting it.
-- **Strip the `x-country` header at the proxy** before re-injecting it from a GeoIP lookup — the server trusts whatever the client sends if no proxy strips it.
+- **Set `x-country` at the proxy, and delete any inbound copy first.** The server trusts the header as given, so without a proxy overwriting it a client can post fake countries — and with no proxy setting it at all, `country` is simply `NULL` on every row and the `/stats/top?dim=country` breakdown and the digest's "Top countries" section stay empty. Behind Cloudflare it is free, since the edge already sends `CF-IPCountry`:
+
+  ```caddy
+  reverse_proxy 127.0.0.1:3001 {
+      header_up -X-Country
+      header_up X-Country {http.request.header.Cf-Ipcountry}
+  }
+  ```
+
+  The delete is not redundant: it is what stops a caller supplying its own value. With another CDN, substitute its equivalent header; with none, use a GeoIP module. Country is captured at collection time and cannot be backfilled.
 - **Watch your access logs.** The `/collect` body never stores IPs, but IPs are processed transiently for rate limiting, and your reverse proxy / request traces likely log them. Configure log retention / redaction to match your privacy posture.
 - **Block `/metrics` at the proxy.** It is unauthenticated by convention and exposes per-tenant traffic shape. The bundled `Caddyfile` returns 404 for it; if you front dullahan with your own nginx/Traefik, replicate that. See [Metrics](#metrics).
 - **Set up backups and prove a restore.** See [Backups](#backups). Nothing else in this list matters if the disk dies.
@@ -150,7 +159,8 @@ Two things to know:
 ## Weekly digest email
 
 `dullahan --digest` computes a plain-English, week-over-week summary (pageviews,
-unique visitors, bounce, avg time on page, top pages/referrers) for each site in
+unique visitors, bounce, avg time on page, top pages/referrers/countries/devices)
+for each site in
 the `sites` table and emails it to that site's `contact_to`. It reuses the
 Resend transport (`RESEND_API_KEY` / `EMAIL_FROM`), overridden per site by
 `email_from`; sites with no recipient, and suspended sites, are skipped. Preview without sending:
