@@ -22,6 +22,11 @@ pub struct Digest {
     pub previous: Summary,
     pub top_pages: Vec<TopRow>,
     pub top_referrers: Vec<TopRow>,
+    /// Empty unless a proxy supplies `x-country` on ingest, in which case the
+    /// section is omitted rather than rendered as zeros — same honest-null rule the
+    /// session metrics follow.
+    pub top_countries: Vec<TopRow>,
+    pub top_devices: Vec<TopRow>,
 }
 
 /// Compute a site's digest over the 7 days ending at `now_ms`, comparing
@@ -36,12 +41,17 @@ pub async fn compute(pool: &PgPool, site: &str, now_ms: i64) -> sqlx::Result<Dig
     let previous = db::summary(pool, site, from_ts - WEEK_MS, from_ts - 1).await?;
     let top_pages = db::top(pool, site, from_ts, to_ts, TopDimension::Path, 5).await?;
     let top_referrers = db::top(pool, site, from_ts, to_ts, TopDimension::Referrer, 5).await?;
+    let top_countries = db::top(pool, site, from_ts, to_ts, TopDimension::Country, 5).await?;
+    // Three, not five: the dimension only ever holds mobile/tablet/desktop.
+    let top_devices = db::top(pool, site, from_ts, to_ts, TopDimension::Device, 3).await?;
     Ok(Digest {
         site: site.to_string(),
         current,
         previous,
         top_pages,
         top_referrers,
+        top_countries,
+        top_devices,
     })
 }
 
@@ -159,6 +169,8 @@ pub fn render_html(d: &Digest) -> String {
 
     html.push_str(&list_section("Top pages", &d.top_pages));
     html.push_str(&list_section("Top referrers", &d.top_referrers));
+    html.push_str(&list_section("Top countries", &d.top_countries));
+    html.push_str(&list_section("Devices", &d.top_devices));
 
     html.push_str(
         "<p style=\"color:#999;font-size:12px;margin-top:32px\">\
@@ -306,6 +318,8 @@ mod tests {
             previous: summary(1000, Some(700.0), Some(0.5)),
             top_pages: vec![row("/", 500), row("/pricing", 200)],
             top_referrers: vec![row("google.com", 300)],
+            top_countries: vec![row("IE", 700), row("GB", 250)],
+            top_devices: vec![row("desktop", 800), row("mobile", 400)],
         }
     }
 
@@ -345,6 +359,28 @@ mod tests {
         assert!(html.contains("42%")); // bounce
         assert!(html.contains("/pricing"));
         assert!(html.contains("google.com"));
+    }
+
+    #[test]
+    fn render_includes_countries_and_devices() {
+        let html = render_html(&digest());
+        assert!(html.contains("Top countries"));
+        assert!(html.contains("IE"));
+        assert!(html.contains("Devices"));
+        assert!(html.contains("desktop"));
+    }
+
+    #[test]
+    fn country_section_is_omitted_when_no_country_data() {
+        // country is only populated when a proxy supplies `x-country`. Without it
+        // the section must disappear rather than render an empty table or a "0" —
+        // the same rule the session metrics follow. Devices are unaffected, since
+        // the tracker always sends `d`.
+        let mut d = digest();
+        d.top_countries = vec![];
+        let html = render_html(&d);
+        assert!(!html.contains("Top countries"));
+        assert!(html.contains("Devices"));
     }
 
     #[test]
