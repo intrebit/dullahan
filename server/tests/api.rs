@@ -194,6 +194,65 @@ async fn collect_persists_a_burst_without_losing_events(pool: PgPool) {
     assert_eq!(distinct, BURST, "batched insert lost or duplicated rows");
 }
 
+/// A body that matches no event shape must be rejected as 422 by the handler
+/// itself, not by an axum extractor.
+///
+/// The distinction is the whole point: an extractor rejection happens before the
+/// handler, so it produced no log line and no counter — events vanished with no
+/// trace. Real traffic hit this (1 in 7 rejected) and it was undiagnosable from
+/// the server side.
+#[sqlx::test]
+async fn collect_rejects_unmatched_shapes_and_stores_nothing(pool: PgPool) {
+    let app = router(test_state(pool.clone(), None, None).await);
+    let ts = 1_700_000_000_000_i64;
+
+    // Each of these is valid JSON that cannot become a RawPayload.
+    let bad = vec![
+        json!({"t": "pageview", "p": "/", "ts": ts}), // no site
+        json!({"t": "pageleave", "s": "s", "p": "/", "ts": ts}), // no dur
+        json!({"t": "event", "s": "s", "p": "/", "ts": ts}), // no name
+        json!({"t": "performance", "s": "s", "p": "/", "ts": ts}), // dead type
+        json!({"t": "pageleave", "s": "s", "p": "/", "ts": ts, "dur": 4.5}), // dur not an int
+    ];
+    for body in bad {
+        let resp = app
+            .clone()
+            .oneshot(with_peer(post_collect(body.clone()), "10.9.9.1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "expected 422 for {body}"
+        );
+    }
+
+    // A body that is not JSON at all lands in the same path rather than panicking.
+    // `with_peer` is required: the rate limiter keys on the client IP and rejects
+    // before the handler when it cannot resolve one, which would make this assert
+    // about the limiter rather than about deserialization.
+    let resp = app
+        .clone()
+        .oneshot(with_peer(
+            Request::builder()
+                .uri("/collect")
+                .method("POST")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("not json at all"))
+                .unwrap(),
+            "10.9.9.2",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM analytics_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "a rejected payload must never reach the table");
+}
+
 /// A saturated ingest queue must shed load visibly rather than answer 202 and
 /// drop the event. Uses a depth-1 queue with nothing draining it, which is the
 /// only way to reach the state deterministically.

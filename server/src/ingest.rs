@@ -9,7 +9,7 @@
 use crate::db::{self, PendingEvent};
 use crate::state::AppState;
 use crate::types::RawPayload;
-use axum::Json;
+use axum::body::Bytes;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use sqlx::PgPool;
@@ -85,14 +85,60 @@ fn spawn_writer_on(
     (tx, handle)
 }
 
+/// Longest prefix of a rejected body written to the log. Enough to identify the
+/// event shape without dumping a 16 KiB attacker-controlled blob into the journal.
+const REJECT_LOG_BYTES: usize = 300;
+
+/// Render an untrusted body for logging: truncated, and with control characters
+/// escaped so a newline in the payload cannot forge extra log lines.
+fn loggable(body: &[u8]) -> String {
+    let head = &body[..body.len().min(REJECT_LOG_BYTES)];
+    let mut out: String = String::from_utf8_lossy(head)
+        .chars()
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_debug().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect();
+    if body.len() > REJECT_LOG_BYTES {
+        out.push('…');
+    }
+    out
+}
+
 pub async fn collect(
     State(state): State<AppState>,
     peer: Option<ConnectInfo<SocketAddr>>,
     headers: HeaderMap,
-    Json(mut payload): Json<RawPayload>,
+    body: Bytes,
 ) -> StatusCode {
+    // Deserialized here rather than by a `Json<RawPayload>` extractor. An extractor
+    // rejection is turned into a 422 by axum *before* this handler runs, so a body
+    // that matches no event shape was discarded with no log line and no counter —
+    // invisible loss on the one endpoint whose whole job is not losing events.
+    // Doing it by hand costs nothing and makes the bad payload diagnosable from the
+    // journal instead of requiring someone to reproduce it in a browser.
+    let mut payload: RawPayload = match serde_json::from_slice(&body) {
+        Ok(p) => p,
+        Err(err) => {
+            metrics::counter!("dullahan_ingest_malformed_total").increment(1);
+            tracing::warn!(
+                error = %err,
+                body = %loggable(&body),
+                "rejected /collect payload: matches no event shape"
+            );
+            return StatusCode::UNPROCESSABLE_ENTITY;
+        }
+    };
+
     if let Err(reason) = payload.validate() {
-        tracing::debug!(reason, "rejected /collect payload");
+        // Was debug, so these were invisible at the default log level too. A
+        // rejected event is lost data; it belongs at warn like the rest.
+        metrics::counter!("dullahan_ingest_invalid_total").increment(1);
+        tracing::warn!(reason, body = %loggable(&body), "rejected /collect payload");
         return StatusCode::BAD_REQUEST;
     }
     payload.clamp_ts(chrono::Utc::now().timestamp_millis());
