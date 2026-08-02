@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the dullahan selfcheck every 10 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+# Deliberately not Persistent: a missed check has no value after the fact, and
+# the external watchdog is what notices the gap.
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

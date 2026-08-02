@@ -52,6 +52,8 @@ pub mod products;
 #[doc(hidden)]
 pub mod salt;
 
+/// Operational checks behind `dullahan --selfcheck`.
+pub mod selfcheck;
 pub mod site_config;
 pub mod sites;
 pub mod sites_api;

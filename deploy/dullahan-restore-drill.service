@@ -1,0 +1,18 @@
+[Unit]
+Description=dullahan backup restore drill
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/dullahan-restore-drill
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=3600
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/backups

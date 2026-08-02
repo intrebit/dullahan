@@ -67,6 +67,33 @@ jobs:
           done
           kill $PID
 
+  migrations:
+    name: migrations (frozen)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The schema is frozen as of v0.1.4: migrations are append-only from here.
+      # sqlx records the SHA-384 of each migration in `_sqlx_migrations` and
+      # refuses to start if it no longer matches, so editing a released migration
+      # does not produce a merge conflict or a test failure — it produces a server
+      # that will not boot, on someone else's machine, after they upgrade. This
+      # job is what turns that into a red CI run instead.
+      - name: No released migration has been modified
+        working-directory: server
+        run: sha384sum --check --strict migrations.sha384
+      # The check above only covers files that are listed, so a new migration that
+      # nobody added to the manifest would be unprotected. Adding is allowed;
+      # adding *silently* is not.
+      - name: Every migration is listed in the manifest
+        working-directory: server
+        run: |
+          diff <(ls migrations/*.sql | sort) <(awk '{print $2}' migrations.sha384 | sort) || {
+            echo "::error::migrations.sha384 is out of date. If you ADDED a migration, run:"
+            echo "::error::  cd server && sha384sum migrations/*.sql > migrations.sha384"
+            echo "::error::If you EDITED an existing one, don't — add a new migration instead."
+            exit 1
+          }
+
   audit:
     name: cargo audit
     runs-on: ubuntu-latest

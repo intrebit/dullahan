@@ -96,12 +96,6 @@ pub fn new_cache() -> SiteCache {
     Arc::new(RwLock::new(Arc::new(Registry::default())))
 }
 
-/// Build a cache pre-populated with `sites`, for tests and for the synchronous
-/// startup load.
-pub fn cache_from(sites: Vec<Site>) -> SiteCache {
-    Arc::new(RwLock::new(Arc::new(build(sites, &[]))))
-}
-
 pub fn snapshot(cache: &SiteCache) -> Arc<Registry> {
     Arc::clone(&cache.read().unwrap())
 }

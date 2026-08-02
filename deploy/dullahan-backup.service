@@ -1,0 +1,23 @@
+[Unit]
+Description=dullahan encrypted Postgres backup
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+# Root: the script calls `sudo -u postgres pg_dump` and writes under /var/backups.
+User=root
+ExecStart=/usr/local/bin/dullahan-backup
+StandardOutput=journal
+StandardError=journal
+
+# A failed backup must be loud. Without this the timer's next run is the only
+# hint anything happened, and OnFailure is what surfaces it in `systemctl
+# --failed`.
+TimeoutStartSec=1800
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/backups

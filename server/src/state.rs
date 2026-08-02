@@ -3,6 +3,7 @@
 
 use crate::config::Config;
 use crate::email::Mailer;
+use crate::ingest::IngestSender;
 use crate::salt::SaltCache;
 use crate::sites::SiteCache;
 use sqlx::PgPool;
@@ -14,6 +15,10 @@ pub struct AppState {
     pub pool: PgPool,
     pub mailer: Option<Mailer>,
     pub salt_cache: SaltCache,
+    /// Bounded queue into the ingest writer task. `/collect` enqueues here
+    /// instead of spawning a task per event, so overload is shed at a known
+    /// depth rather than becoming pool-acquire timeouts and lost rows.
+    pub ingest_tx: IngestSender,
     /// Cached `sites` table. Admission and per-site token resolution read this
     /// instead of hitting the DB — `/collect` is a hot path.
     pub sites: SiteCache,

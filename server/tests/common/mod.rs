@@ -89,6 +89,11 @@ pub async fn state_with_tenants(
     // Mirrors main.rs.
     let open_mode = admin_token.is_none();
 
+    // Each test state gets its own writer task. The `JoinHandle` is dropped
+    // rather than awaited — the task lives as long as the sender inside the
+    // returned state, which is exactly the lifetime of the test.
+    let (ingest_tx, _writer) = dullahan::ingest::spawn_writer(pool.clone());
+
     AppState {
         config: Arc::new(Config {
             admin_token: admin_token.map(String::from),
@@ -97,6 +102,7 @@ pub async fn state_with_tenants(
         pool,
         mailer: None,
         salt_cache: dullahan::salt::new_cache(),
+        ingest_tx,
         sites: cache,
         open_mode,
         admin_token_hash,

@@ -8,6 +8,20 @@ ${DOMAIN} {
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
         Referrer-Policy "no-referrer"
         X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Content-Security-Policy "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+        Permissions-Policy "geolocation=(), camera=(), microphone=(), browsing-topics=()"
     }
-    reverse_proxy 127.0.0.1:3011
+
+    # /metrics is unauthenticated by convention, so it must not be reachable from
+    # the internet: it exposes request rates, path cardinality and error counts
+    # for every tenant on this host. Scrape it over the loopback interface
+    # instead — `dullahan --selfcheck` and any local Prometheus agent still can.
+    @metrics path /metrics /metrics/*
+    respond @metrics 404
+
+    reverse_proxy 127.0.0.1:3011 {
+        header_up X-Real-IP {remote_host}
+        header_up Host {host}
+    }
 }

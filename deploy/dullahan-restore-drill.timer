@@ -1,0 +1,11 @@
+[Unit]
+Description=Prove monthly that the dullahan backups can be restored
+
+[Timer]
+# First Sunday of the month, well after the nightly backup has finished.
+OnCalendar=Sun *-*-01..07 05:00:00
+Persistent=true
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target

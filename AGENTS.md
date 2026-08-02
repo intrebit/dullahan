@@ -25,12 +25,34 @@ Pure Rust: the repo ships no JavaScript. The browser tracker that POSTs to
 **Server** (from `server/`):
 ```bash
 cargo build --locked
-DATABASE_URL=postgres://$USER@localhost/dullahan_test cargo test --locked   # needs Postgres
+DATABASE_URL=$TEST_DB cargo test --locked   # needs Postgres, see below
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
-Tests use `#[sqlx::test]`, which spins up an ephemeral DB per test from
-`DATABASE_URL` (a `dullahan_test` DB with CREATEDB rights must exist locally).
+
+Tests use `#[sqlx::test]`, which creates an ephemeral database **per test** from
+`DATABASE_URL`, so that role needs `CREATEDB` and the named database must exist.
+
+Don't assume the system Postgres can provide that — it may be on a non-default
+port, lack a role matching your username, or require a password you don't have
+(all three are true on the deploy VPS). A throwaway cluster you own outright
+needs no root, no daemon, and no container, and never touches a real database:
+
+```bash
+export PATH=/usr/lib/postgresql/16/bin:$PATH   # or your version
+PGDIR=$(mktemp -d) && SOCK=/tmp/pgs-$USER && mkdir -p "$SOCK"
+initdb -D "$PGDIR" -U "$USER" --auth=trust
+pg_ctl -D "$PGDIR" -o "-p 5599 -k $SOCK -c listen_addresses=''" -l "$PGDIR/pg.log" start
+createdb -h "$SOCK" -p 5599 dullahan_test
+
+export TEST_DB="postgres:///dullahan_test?host=$SOCK&port=5599"
+# ... run the tests ...
+pg_ctl -D "$PGDIR" stop -m fast
+```
+
+Keep the socket directory path short: Postgres caps the full socket path at 107
+bytes, and a long `TMPDIR` silently blows past it (the failure is "Unix-domain
+socket path is too long" in the log, and a refused connection).
 
 CI runs the above plus `docker` (image build + `/health` smoke). Four gates
 (lint, server, audit, docker); keep them green.
@@ -108,10 +130,25 @@ Rules that follow, all learned the hard way:
 
 ## Migrations & indexes (lessons)
 
-- `0001_init.sql` is the whole schema, squashed from the original seven
-  migrations. Never edit it: sqlx stores each applied migration's checksum and
-  refuses to start when one changes ("previously applied but has been modified").
-  Schema changes are new files — `0002_*.sql` onward.
+- `0001_init.sql` is the whole schema, squashed twice now: first from the original
+  seven migrations, then again to fold in tenancy, products, per-site config, and
+  the retention index. Never edit it: sqlx stores each applied migration's
+  checksum and refuses to start when one changes ("previously applied but has
+  been modified"). Schema changes are new files — `0002_*.sql` onward.
+- **No more squashing. The schema is frozen as of v0.1.4.** `server/migrations.sha384`
+  is the manifest and the `migrations (frozen)` CI job enforces it: no listed file
+  may change, and every migration must be listed. Adding one means appending it and
+  running `cd server && sha384sum migrations/*.sql > migrations.sha384`.
+- **What the last squash taught, kept because it is the general lesson.** Diffing
+  `pg_dump --schema-only` of a DB migrated the old way against one built from the
+  squashed file is not a formality — doing it caught two unintended diffs that a
+  naive checksum rewrite would have baked into production: `analytics_events_ts_idx`
+  was missing (so every retention sweep would seq-scan the biggest table), and
+  `analytics_events_type_check` still admitted the long-dead `'performance'` type.
+  `deploy/rebaseline-migrations.sh` exists to reconcile exactly those, and is the
+  supported upgrade path from the pre-freeze chain — recreating the database is no
+  longer necessary. Column order differs there too (inline vs `ADD COLUMN`) and is
+  deliberately left alone: nothing uses `SELECT *` or positional inserts.
 - sqlx runs each migration in a transaction on startup. A migration starting with
   `-- no-transaction` runs outside one, which is what `CREATE INDEX CONCURRENTLY`
   needs. The squashed init builds its indexes on an empty table, so it wants
@@ -126,12 +163,25 @@ Rules that follow, all learned the hard way:
     `(site_id, ts)`-bounded scan; the view_id index is ignored on selective ranges
     and loses to a parallel seq-scan on wide ones, while costing random-UUID writes
     on the hot `/collect` path.
+  - `(ts)` alone — the one index not led by `site_id`. `db::prune_events` filters
+    on `ts` across every tenant, so all the others are useless to it.
+- **`db::summary` scans the range once** into a `MATERIALIZED` CTE. Two measured
+  choices, both easy to undo by accident: `MATERIALIZED` is required (Postgres would
+  otherwise inline the CTE into each reference, restoring the five scans it replaced),
+  and `path` is deliberately *excluded* from the CTE — it is up to 2048 bytes, so
+  carrying it spilled the materialised set to temp files (10753 temp blocks vs 3679).
+  `top_path` therefore still reads the base table, where its own index serves it.
 
 ## Gotchas
 
-- **Ingest is fire-and-forget** (`tokio::spawn` in `ingest.rs`): `/collect`
-  returns `202` before the row is written, so reads can lag — tests use a
-  `wait_for_count` poll helper.
+- **Ingest is asynchronous but bounded** (`ingest::spawn_writer`): `/collect`
+  enqueues on a 10k channel and returns `202` before the row is written, so reads
+  can lag — tests use a `wait_for_count` poll helper. A *full* queue returns `503`
+  and bumps `dullahan_ingest_queue_full_total`; never make it `202`, which would
+  promise durability the server isn't providing. One writer task batches up to 128
+  events per INSERT via `QueryBuilder::push_values`, retrying a failed batch row by
+  row so one poison event costs one event. `main` awaits the writer's `JoinHandle`
+  after `serve` returns, which is what makes a restart lossless — don't drop it.
 - **Range bucketing uses `ts`** (client, clamped); **realtime uses `received_at`**
   (server). Don't mix them.
 - A free-text value bound into SQL must be charset/length-guarded, then a Postgres

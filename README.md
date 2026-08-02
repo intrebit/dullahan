@@ -51,14 +51,14 @@ Every endpoint — stats, blog, contact, `/collect` — is in [`docs/api.md`](do
 
 ## Privacy
 
-No cookies, no fingerprinting, **no raw IP storage — ever.** The surface is deliberately lean: no web vitals, no scroll depth, and no outbound-link clicks are collected, and the server never parses the User-Agent for analytics (no browser/OS/viewport columns). The server processes the client IP transiently for rate limiting; with sessions **off** (the default), `/collect` otherwise uses neither IP nor User-Agent. With sessions **on** (`SESSIONS_ENABLED=1`), the selected client IP + User-Agent are combined with a daily-rotating salt into an anonymized hash and immediately discarded (the UA is never stored); old salts are pruned on startup and periodically while the server runs, making historical hashes permanently unlinkable after retention. Consequences embraced on purpose: a cross-day unique count is impossible, so `summary` reports **average daily visitors** rather than an inflated range-wide total, and new-vs-returning / retention / DAU-MAU are intentionally not built.
+No cookies, no fingerprinting, **no raw IP storage — ever.** The surface is deliberately lean: no web vitals, no scroll depth, and no outbound-link clicks are collected, and the server never parses the User-Agent for analytics (no browser/OS/viewport columns). The server processes the client IP transiently for rate limiting; with sessions **off** (the default), `/collect` otherwise uses neither IP nor User-Agent. With sessions **on** (`SESSIONS_ENABLED=1`), the selected client IP + User-Agent are combined with a daily-rotating salt into an anonymized hash and immediately discarded (the UA is never stored); old salts are pruned on startup and periodically while the server runs, making historical hashes permanently unlinkable after retention. The event rows themselves are kept indefinitely unless you set `RETENTION_DAYS`, which sweeps `analytics_events` older than N days. Consequences embraced on purpose: a cross-day unique count is impossible, so `summary` reports **average daily visitors** rather than an inflated range-wide total, and new-vs-returning / retention / DAU-MAU are intentionally not built.
 
 ## Documentation
 
 | Doc | What |
 |---|---|
 | [`docs/api.md`](docs/api.md) | Full HTTP API reference — `/stats/*`, blog, `/collect`, what's collected |
-| [`docs/deploy.md`](docs/deploy.md) | Configuration, self-host hardening, metrics, load testing |
+| [`docs/deploy.md`](docs/deploy.md) | Configuration, self-host hardening, backups, monitoring, metrics, load testing |
 | [`AGENTS.md`](AGENTS.md) | Developer guide (build/test/lint, conventions, gotchas) |
 
 ## Security
