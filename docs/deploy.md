@@ -20,8 +20,16 @@ Server env vars:
 | `BEHIND_TLS` | no | `false` (disables HSTS) |
 | `TRUST_PROXY_HEADERS` | no | `false` (use TCP peer IP for rate limiting/session hashing) |
 | `SESSIONS_ENABLED` | no | `false` (no session IP/UA processing; opt-in for unique visitors, sessions, bounce rate, browser/OS) |
+| `RETENTION_DAYS` | no | unset (events kept forever) — set e.g. `365` to sweep `analytics_events` older than that |
 | `LOG_FORMAT` | no | `text` (set `json` for structured logs) |
 | `RUST_LOG` | no | `info,sqlx=warn` |
+| `ALERT_TO` | recommended | unset (checks run and log, but cannot page) — operator address for `--selfcheck` |
+| `ALERT_DISK_PERCENT` | no | `85` |
+| `ALERT_REPEAT_HOURS` | no | `6` (how long before re-mailing an ongoing problem) |
+| `BACKUP_DIR` | no | `/var/backups/dullahan` (where `--selfcheck` looks for backup runs) |
+| `ALERT_BACKUP_MAX_AGE_HOURS` | no | `48` (`0` disables the staleness check) |
+| `HEALTHCHECK_URL` | optional | unset — external dead-man's-switch; add it to cover the host itself dying |
+| `SELFCHECK_STATE_PATH` | no | `selfcheck-state.json` (relative to `WorkingDirectory`) |
 
 > **Tenancy:** sites live in the `sites` table, not in env vars. `ALLOWED_SITES`
 > and `CONTACT_TO_<SITE>` were removed — register a tenant with `POST /sites`
@@ -30,7 +38,44 @@ Server env vars:
 > and `/stats/*`, so a fresh install works out of the box; the server warns at
 > startup until you register your tenants.
 
-> **Schema:** `0001_init.sql` creates everything and is applied on first start. Migrations are checksummed, so an applied one must never be edited — the server refuses to start if it changes.
+> **Schema:** `0001_init.sql` creates everything and is applied on first start.
+> **The schema is frozen as of v0.1.4 and migrations are append-only from here on.**
+> sqlx records the SHA-384 of each migration in `_sqlx_migrations` and refuses to
+> start if it stops matching, so editing a released migration does not break your
+> build — it breaks someone else's server after they upgrade. A CI job
+> (`migrations (frozen)`) enforces both halves: no listed file may change, and every
+> migration must be listed in `server/migrations.sha384`. Adding a migration means
+> appending it and regenerating the manifest:
+>
+> ```bash
+> cd server && sha384sum migrations/*.sql > migrations.sha384
+> ```
+>
+> **Upgrading from before the freeze** (any deploy migrated with the old
+> `0001`–`0005` chain) needs a one-time rebaseline, because squashing those into a
+> single `0001` changed its checksum. This used to call for `DROP DATABASE`; it no
+> longer does. The two schemas are equivalent apart from one index and one CHECK
+> constraint, so the recorded history can be rewritten in place with every row kept:
+>
+> ```bash
+> deploy/rebaseline-migrations.sh            # report: changes nothing
+> deploy/rebaseline-migrations.sh --apply    # after taking a backup
+> ```
+>
+> It refuses to run against any history it does not recognise, and blocks if
+> legacy `type='performance'` rows would violate the tightened constraint. The
+> symptom it fixes is `migration 1 was previously applied but has been modified`
+> in `journalctl -u dullahan`.
+
+> **Event retention:** `analytics_events` is the only table that grows without
+> bound, and by default nothing deletes from it. Set `RETENTION_DAYS` to sweep
+> rows older than N days — the sweep runs at startup and every 6 hours after,
+> deletes in 10k chunks (so the first pass over a long-retained table doesn't
+> hold one long transaction), and logs the row count at `info`. It compares
+> against `ts`, the client clock `/stats/*` filters on, so retention matches
+> what the API can still report. This is disk hygiene, not a privacy control:
+> the unlinkability of old visitor hashes comes from pruning `daily_salts`,
+> which happens regardless.
 
 ## Operator hardening (self-host checklist)
 
@@ -41,8 +86,12 @@ The defaults are safe for a private deploy. For a public-internet host:
 - **Set `STATS_ORIGINS`** to your dashboard origin so a browser elsewhere can't read `/stats/*` responses even if the admin token leaks.
 - **Set `BEHIND_TLS=1`** once the deploy is fronted by HTTPS so the server emits `Strict-Transport-Security`. The other security headers (`X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`) ship unconditionally.
 - **Rate limiting** is built in (per-IP, in-process): `/collect` allows ~120/min burst 60, `/contact` allows ~5/min burst 3. By default the server keys on the TCP peer IP and ignores spoofable forwarded headers. If it runs behind a trusted reverse proxy, set `TRUST_PROXY_HEADERS=1` so rate limiting and session hashing use `x-forwarded-for`, then `x-real-ip`, then the TCP peer. The bundled Caddy installer sets this because Caddy is the only public peer. For a hostile public deploy, layer additional limits at Caddy/nginx.
+- **Consider `RETENTION_DAYS`.** Nothing deletes analytics events by default, so a busy site's `analytics_events` grows until the disk fills — and every `/stats/*` query slows as it does. Data minimisation also argues for setting it.
 - **Strip the `x-country` header at the proxy** before re-injecting it from a GeoIP lookup — the server trusts whatever the client sends if no proxy strips it.
 - **Watch your access logs.** The `/collect` body never stores IPs, but IPs are processed transiently for rate limiting, and your reverse proxy / request traces likely log them. Configure log retention / redaction to match your privacy posture.
+- **Block `/metrics` at the proxy.** It is unauthenticated by convention and exposes per-tenant traffic shape. The bundled `Caddyfile` returns 404 for it; if you front dullahan with your own nginx/Traefik, replicate that. See [Metrics](#metrics).
+- **Set up backups and prove a restore.** See [Backups](#backups). Nothing else in this list matters if the disk dies.
+- **Set `ALERT_TO`.** `dullahan_ingest_insert_failures_total` exists because ingest can lose rows without any request failing; unmonitored, it increments into the void. See [Monitoring and alerting](#monitoring-and-alerting).
 
 ## Continuous deployment
 
@@ -110,13 +159,12 @@ Resend transport (`RESEND_API_KEY` / `EMAIL_FROM`), overridden per site by
 /opt/dullahan/dullahan --digest --dry-run   # prints each email to stdout
 ```
 
-Run it weekly with the bundled units:
+`install.sh` installs and starts `dullahan-digest.timer` — this used to be a
+copy-these-files-by-hand step here, which is precisely why the digest was shipped
+but never actually firing anywhere. Confirm with:
 
 ```bash
-sudo cp deploy/dullahan-digest.service deploy/dullahan-digest.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now dullahan-digest.timer
-systemctl list-timers dullahan-digest.timer   # confirm the next run
+systemctl list-timers dullahan-digest.timer
 ```
 
 The timer defaults to **Sunday 18:00 Europe/Dublin** — edit `OnCalendar` in
@@ -125,15 +173,167 @@ drop it for server-local time on older systemd).
 
 ## Metrics
 
-`GET /metrics` exposes Prometheus-format metrics for HTTP traffic (request rate, latency histograms, status codes per route). Scrape it with Prometheus / Grafana Agent / Vector.
+`GET /metrics` exposes Prometheus-format metrics for HTTP traffic (request rate, latency histograms, status codes per route), plus dullahan's own ingest counters:
 
-The endpoint is **unauthenticated** — keep it on an internal interface or block external access at your reverse proxy. Standard practice for `/metrics` everywhere; dullahan follows the convention.
+| Counter | Meaning |
+|---|---|
+| `dullahan_ingest_queue_full_total` | `/collect` shed an event because the writer queue was full. The server answered 503, so the client knows — but the event is gone. |
+| `dullahan_ingest_insert_failures_total` | An event reached the writer and Postgres rejected it. Silent data loss; nothing else reveals it. |
+| `dullahan_ingest_queue_closed_total` | The writer task is gone. A bug or a shutdown race — nothing will be persisted until restart. |
+
+The endpoint is **unauthenticated**, which is the convention everywhere, and it leaks
+request rates, path cardinality and error counts for every tenant on the host. So it
+must not be reachable from the internet. The bundled `Caddyfile` blocks it:
+
+```caddy
+@metrics path /metrics /metrics/*
+respond @metrics 404
+```
+
+Scrape it over loopback instead (`http://127.0.0.1:<port>/metrics`), which is what
+`dullahan --selfcheck` and any local Prometheus agent do. Verify both halves after
+changing the proxy config:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://your.domain/metrics   # want 404
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:3001/metrics # want 200
+```
 
 ```
 # HELP axum_http_requests_total Total HTTP requests.
 # TYPE axum_http_requests_total counter
 axum_http_requests_total{method="GET",path="/health",status="200"} 1
 ...
+```
+
+## Backups
+
+`install.sh` installs `dullahan-backup.timer` (nightly, 03:15 + jitter) and
+`dullahan-restore-drill.timer` (first Sunday of the month). **Both are enabled but
+left stopped until you set an off-box destination** — a backup that only ever lands
+on the disk it is protecting is the failure mode worth refusing to configure
+silently.
+
+Each run writes `$BACKUP_DIR/<UTC timestamp>/` containing `globals.sql.age`, one
+`<db>.dump.age` per database (`pg_dump -Fc`), and a `MANIFEST` of SHA-256 sums.
+Everything is `age`-encrypted *before* upload, so the object store never holds
+readable analytics data.
+
+Setup:
+
+```bash
+# 1. encryption keypair (install.sh generates one on first run; this is the manual path)
+age-keygen -o /etc/dullahan/backup-identity.txt
+age-keygen -y /etc/dullahan/backup-identity.txt > /etc/dullahan/backup-recipients.txt
+chmod 600 /etc/dullahan/backup-*.txt
+
+# 2. an off-box destination. Any S3-compatible bucket works; Cloudflare R2 is
+#    recommended because it charges nothing for egress — the restore drill
+#    downloads a backup every month, and on providers that bill egress that
+#    verification is the thing you end up quietly switching off. 10 GB free.
+apt install rclone age
+rclone config
+#   n) new remote   name: r2   storage: s3   provider: Cloudflare
+#   access_key_id / secret_access_key: from an R2 API token
+#   endpoint: https://<accountid>.r2.cloudflarestorage.com     region: auto
+rclone mkdir r2:dullahan-backups
+
+# 3. point the scripts at it
+$EDITOR /etc/dullahan/backup.env  # RCLONE_REMOTE=r2:dullahan-backups
+
+# 4. prove it works before trusting it
+dullahan-backup && dullahan-restore-drill
+
+# 5. start the timers
+systemctl start dullahan-backup.timer dullahan-restore-drill.timer
+```
+
+> **Copy `/etc/dullahan/backup-identity.txt` off this machine.** It is the only
+> thing that can decrypt these backups. Left only on the host being backed up, a
+> dead disk destroys the backups along with the data they existed to protect — you
+> would be paying for a bucket full of files nobody can open.
+
+**Retention.** Local copies are grandfathered: `KEEP_DAILY=7`, `KEEP_WEEKLY=4`,
+`KEEP_MONTHLY=3`, kept by time *bucket* rather than by age, so a long gap in runs
+cannot silently expire every copy you have. Remote retention is deliberately **not**
+managed by the script — set a bucket lifecycle rule instead, so a compromised or
+buggy backup host cannot delete your history.
+
+**The restore drill is the point.** It downloads the newest backup from the object
+store (the copy that would actually survive losing this host), verifies it against
+its manifest, decrypts it, restores into a throwaway database, asserts the expected
+tables and non-empty row counts, then drops it. A backup system whose restore path
+has never executed is a hope, not a backup.
+
+## Monitoring and alerting
+
+Two layers, because they fail differently.
+
+**On-box: `dullahan --selfcheck`**, run every 10 minutes by
+`dullahan-selfcheck.timer`. A separate short-lived process, deliberately with no
+`After=dullahan.service` dependency — reporting that the server is down is its job,
+so depending on it would disable the check in exactly the situation it exists for.
+It checks:
+
+| Check | Catches |
+|---|---|
+| `/health` reachable | the server being down or wedged |
+| Postgres answers `SELECT 1` | database down, out of connections, disk-full refusals |
+| ingest-loss counters rose since last run | events accepted and then lost — no request failure reveals this |
+| disk usage ≥ `ALERT_DISK_PERCENT` | the slow death that takes Postgres with it |
+| newest backup younger than `ALERT_BACKUP_MAX_AGE_HOURS` | **the nightly backup having quietly stopped** |
+
+Findings are mailed to `ALERT_TO` through the existing Resend transport. Repeat
+alerts for an ongoing problem are throttled to `ALERT_REPEAT_HOURS`, and a recovered
+check has its throttle cleared so the next occurrence alerts immediately.
+
+The backup-staleness check is what makes an external watchdog optional rather than
+necessary: a backup cron's normal failure mode is dying quietly months before anyone
+looks, and this notices that the *artifacts* stopped appearing. It stays silent until
+`BACKUP_DIR` exists — i.e. until backups have run at least once — so a deploy that
+deliberately has none is not nagged every ten minutes.
+
+```bash
+/opt/dullahan/dullahan --selfcheck --dry-run   # print findings, send nothing
+```
+
+It exits non-zero when anything is wrong, which is load-bearing: systemd records
+the failure, and the watchdog ping below does not happen.
+
+**Off-box (optional): `HEALTHCHECK_URL`.** The checks above cover everything
+*on* this box. The one thing they structurally cannot cover is the box itself being
+gone — a dead host cannot report its own absence, and neither can a dead timer.
+
+That gap is real but it is one gap, and closing it means depending on a third-party
+service, so it is left off by default. When you want it, create checks at
+[healthchecks.io](https://healthchecks.io) (free tier is enough) and set
+`HEALTHCHECK_URL` in `dullahan.env`, plus `HEALTHCHECK_BACKUP_URL` and
+`HEALTHCHECK_DRILL_URL` in `/etc/dullahan/backup.env`. Each pings on success and
+`<url>/fail` on failure, so you learn about a failure immediately *and* about
+silence. Suggested periods: selfcheck 10min + 30min grace, backup 1 day + 2h, drill
+1 month + 1 day.
+
+Until then, host-down detection is whatever you already have — uptime monitoring on
+the public hostname, or noticing the site is offline.
+
+Why not Prometheus and Grafana on the box? On a small VPS already running Postgres
+and the server, it is several hundred MB of RAM for dashboards — and it still could
+not alert you when the host died. If you want metric history, scrape `/metrics` over
+loopback from somewhere else.
+
+## Timers
+
+Everything the project schedules, all installed by `install.sh`:
+
+| Timer | Schedule | What it does |
+|---|---|---|
+| `dullahan-selfcheck.timer` | every 10 min | health, Postgres, ingest-loss counters, disk |
+| `dullahan-digest.timer` | Sun 18:00 | per-site weekly digest email |
+| `dullahan-backup.timer` | 03:15 nightly | encrypted dump, uploaded off-box |
+| `dullahan-restore-drill.timer` | 1st Sunday, 05:00 | restores the newest backup and verifies it |
+
+```bash
+systemctl list-timers 'dullahan*'
 ```
 
 ## Load testing

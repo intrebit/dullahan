@@ -153,6 +153,92 @@ async fn collect_inserts_pageview(pool: PgPool) {
     assert_eq!(row, ("site-1".into(), "pageview".into(), "/about".into()));
 }
 
+/// Enough events arriving *at once* that the writer batches them into multi-row
+/// inserts rather than handling each alone — the path a single-event test never
+/// reaches, and the one where a mis-ordered `push_values` would corrupt rows.
+///
+/// Each request gets its own peer IP: the per-IP rate limiter allows a burst of
+/// 60, so a single-IP burst would be answered with 429s and test the limiter
+/// instead of the writer.
+#[sqlx::test]
+async fn collect_persists_a_burst_without_losing_events(pool: PgPool) {
+    const BURST: i64 = 300;
+    let app = router(test_state(pool.clone(), None, None).await);
+
+    let mut inflight = tokio::task::JoinSet::new();
+    for i in 0..BURST {
+        let app = app.clone();
+        inflight.spawn(async move {
+            let req = with_peer(
+                post_collect(json!({
+                    "t": "pageview",
+                    "s": "site-1",
+                    "p": format!("/p/{i}"),
+                    "ts": 1_700_000_000_000_i64 + i,
+                    "d": "desktop"
+                })),
+                &format!("10.{}.{}.{}", i / 65536 + 1, (i / 256) % 256, i % 256),
+            );
+            app.oneshot(req).await.unwrap().status()
+        });
+    }
+    while let Some(status) = inflight.join_next().await {
+        assert_eq!(status.unwrap(), StatusCode::ACCEPTED);
+    }
+
+    wait_for_count(&pool, BURST).await;
+    let distinct: i64 = sqlx::query_scalar("SELECT count(DISTINCT path) FROM analytics_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(distinct, BURST, "batched insert lost or duplicated rows");
+}
+
+/// A saturated ingest queue must shed load visibly rather than answer 202 and
+/// drop the event. Uses a depth-1 queue with nothing draining it, which is the
+/// only way to reach the state deterministically.
+#[sqlx::test]
+async fn collect_sheds_load_when_the_queue_is_full(pool: PgPool) {
+    let (tx, _rx) = dullahan::ingest::channel(1);
+    let mut state = test_state(pool.clone(), None, None).await;
+    state.ingest_tx = tx;
+    let app = router(state);
+
+    let event = json!({
+        "t": "pageview",
+        "s": "site-1",
+        "p": "/",
+        "ts": 1_700_000_000_000_i64,
+        "d": "desktop"
+    });
+
+    // Fills the single slot.
+    let first = app
+        .clone()
+        .oneshot(with_peer(post_collect(event.clone()), "10.0.0.2"))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::ACCEPTED);
+
+    let second = app
+        .clone()
+        .oneshot(with_peer(post_collect(event), "10.0.0.2"))
+        .await
+        .unwrap();
+    assert_eq!(
+        second.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "a full queue must not answer 202"
+    );
+
+    // Nothing drained the queue, so nothing can have reached the table.
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM analytics_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
 #[sqlx::test]
 async fn collect_rejects_unknown_site_when_allowlisted(pool: PgPool) {
     let app = router(test_state(pool.clone(), None, Some(vec!["site-a"])).await);
@@ -724,6 +810,93 @@ async fn salt_prune_does_not_require_creating_today_salt(pool: PgPool) {
         remaining.is_empty(),
         "old salts should be pruned without creating d5"
     );
+}
+
+#[sqlx::test]
+async fn prune_events_removes_only_rows_past_the_cutoff(pool: PgPool) {
+    let day = 24 * 60 * 60 * 1000i64;
+    let now = chrono::Utc::now().timestamp_millis();
+    // One row per day for the last 10 days, tagged by path so we can see which survive.
+    for age in 0..10i64 {
+        sqlx::query(
+            "INSERT INTO analytics_events (site_id, type, path, ts)
+             VALUES ('r', 'pageview', $1, $2)",
+        )
+        .bind(format!("/{age}"))
+        .bind(now - age * day)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    // A 7-day retention. The cutoff is exclusive (`ts < cutoff`), so a row landing
+    // exactly on it — age 7 — is kept: only ages 8 and 9 are strictly older.
+    let removed = dullahan::db::prune_events(&pool, now - 7 * day)
+        .await
+        .unwrap();
+    assert_eq!(removed, 2, "only rows strictly older than the cutoff go");
+
+    let surviving: Vec<String> =
+        sqlx::query_scalar("SELECT path FROM analytics_events ORDER BY ts DESC")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        surviving,
+        vec!["/0", "/1", "/2", "/3", "/4", "/5", "/6", "/7"],
+        "everything inside the window, and the boundary row, is untouched"
+    );
+
+    // Idempotent: a second sweep at the same cutoff has nothing left to do.
+    let removed = dullahan::db::prune_events(&pool, now - 7 * day)
+        .await
+        .unwrap();
+    assert_eq!(removed, 0);
+}
+
+#[sqlx::test]
+async fn prune_events_drains_past_one_chunk(pool: PgPool) {
+    // The sweep deletes in bounded chunks (10k) and loops until drained. Insert
+    // more than one chunk so a single-statement implementation would leave rows.
+    let now = chrono::Utc::now().timestamp_millis();
+    sqlx::query(
+        "INSERT INTO analytics_events (site_id, type, path, ts)
+         SELECT 'r', 'pageview', '/', $1 FROM generate_series(1, 10500)",
+    )
+    .bind(now - 30 * 24 * 60 * 60 * 1000i64)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let removed = dullahan::db::prune_events(&pool, now).await.unwrap();
+    assert_eq!(removed, 10_500, "loops until the table is drained");
+
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM analytics_events")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+#[sqlx::test]
+async fn prune_events_is_not_scoped_to_one_site(pool: PgPool) {
+    // Retention is a global disk-hygiene sweep, not a per-tenant operation:
+    // an old row belonging to any site is past the cutoff for all of them.
+    let now = chrono::Utc::now().timestamp_millis();
+    let old = now - 30 * 24 * 60 * 60 * 1000i64;
+    for site in ["a", "b"] {
+        sqlx::query(
+            "INSERT INTO analytics_events (site_id, type, path, ts) VALUES ($1, 'pageview', '/', $2)",
+        )
+        .bind(site)
+        .bind(old)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    let removed = dullahan::db::prune_events(&pool, now).await.unwrap();
+    assert_eq!(removed, 2, "both tenants' stale rows are swept");
 }
 
 #[sqlx::test]

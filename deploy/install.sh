@@ -106,13 +106,64 @@ EOF
     chmod 600 "$ENV_FILE"
 fi
 
-echo "==> systemd unit"
-install -m 644 "$REPO_DIR/deploy/dullahan.service" /etc/systemd/system/dullahan.service
+echo "==> systemd units"
+# Every unit the project ships, not just the server. The digest timer used to be
+# a copy-these-files-by-hand step in the docs, which is exactly why it was never
+# running anywhere: a shipped feature that the installer does not install is a
+# feature that does not happen.
+for unit in dullahan.service \
+            dullahan-digest.service dullahan-digest.timer \
+            dullahan-selfcheck.service dullahan-selfcheck.timer \
+            dullahan-backup.service dullahan-backup.timer \
+            dullahan-restore-drill.service dullahan-restore-drill.timer; do
+    install -m 644 "$REPO_DIR/deploy/$unit" "/etc/systemd/system/$unit"
+done
 systemctl daemon-reload
 systemctl enable --now dullahan
 
-echo "==> deploy helper (used by CD; harmless if you only deploy by hand)"
+echo "==> helper scripts"
 install -m 755 -o root -g root "$REPO_DIR/deploy/dullahan-deploy.sh" /usr/local/bin/dullahan-deploy
+install -m 755 -o root -g root "$REPO_DIR/deploy/dullahan-backup.sh" /usr/local/bin/dullahan-backup
+install -m 755 -o root -g root "$REPO_DIR/deploy/dullahan-restore-drill.sh" /usr/local/bin/dullahan-restore-drill
+
+echo "==> backup config"
+install -d -m 700 -o root -g root /etc/dullahan
+if [[ ! -f /etc/dullahan/backup.env ]]; then
+    install -m 600 -o root -g root "$REPO_DIR/deploy/backup.env.example" /etc/dullahan/backup.env
+    BACKUP_ENV_CREATED=1
+fi
+# `age` is what makes an off-box copy safe to store; without it the backup script
+# refuses to run rather than uploading readable analytics data. Failure here is
+# reported, not fatal: the server is already installed and serving by this point,
+# and aborting would leave a working deploy looking like a failed install.
+if ! command -v age >/dev/null 2>&1; then
+    apt-get install -y --no-install-recommends age || true
+fi
+
+# Generate the encryption keypair on first install so the operator has one to
+# copy off the box, rather than discovering at 03:15 that backups never started.
+if ! command -v age-keygen >/dev/null 2>&1; then
+    AGE_MISSING=1
+elif [[ ! -f /etc/dullahan/backup-identity.txt ]]; then
+    age-keygen -o /etc/dullahan/backup-identity.txt 2>/dev/null
+    chmod 600 /etc/dullahan/backup-identity.txt
+    age-keygen -y /etc/dullahan/backup-identity.txt > /etc/dullahan/backup-recipients.txt
+    chmod 600 /etc/dullahan/backup-recipients.txt
+    AGE_KEY_CREATED=1
+fi
+
+echo "==> timers"
+# The digest and selfcheck timers are safe to start immediately. The backup and
+# drill timers are enabled but NOT started: they need a destination and an
+# off-box copy of the key first, and a backup run that silently lands only on
+# this disk is the failure mode worth refusing to set up automatically.
+systemctl enable --now dullahan-digest.timer dullahan-selfcheck.timer
+systemctl enable dullahan-backup.timer dullahan-restore-drill.timer
+if grep -q '^RCLONE_REMOTE=.\+' /etc/dullahan/backup.env 2>/dev/null; then
+    systemctl start dullahan-backup.timer dullahan-restore-drill.timer
+else
+    BACKUP_NEEDS_CONFIG=1
+fi
 
 echo "==> caddyfile"
 mkdir -p /etc/caddy
@@ -126,6 +177,7 @@ echo "  dullahan is up at https://${DOMAIN}"
 echo "=========================================="
 echo "  health:    curl https://${DOMAIN}/health"
 echo "  logs:      journalctl -u dullahan -f"
+echo "  timers:    systemctl list-timers 'dullahan*'"
 echo "  redeploy:  re-run install.sh (rebuilds binary), or set up CD — docs/deploy.md"
 echo "=========================================="
 if [[ "${ADMIN_TOKEN_GENERATED:-0}" == "1" ]]; then
@@ -133,4 +185,30 @@ if [[ "${ADMIN_TOKEN_GENERATED:-0}" == "1" ]]; then
     echo "Generated ADMIN_TOKEN — save it now, it gates /stats/*:"
     echo "    $ADMIN_TOKEN"
     echo "(stored in $ENV_FILE; re-runs of install.sh will reuse it.)"
+fi
+if [[ "${AGE_KEY_CREATED:-0}" == "1" ]]; then
+    echo
+    echo "!! COPY THE BACKUP KEY OFF THIS MACHINE NOW !!"
+    echo "    /etc/dullahan/backup-identity.txt"
+    echo "It is the only thing that can decrypt your backups. Left here alone, a"
+    echo "dead disk destroys the backups along with the data they were protecting."
+fi
+if [[ "${AGE_MISSING:-0}" == "1" ]]; then
+    echo
+    echo "Could not install \`age\`, so no backup encryption key was generated and"
+    echo "backups will refuse to run. Install it and re-run install.sh:"
+    echo "    apt install age    # or see https://github.com/FiloSottile/age"
+fi
+if [[ "${BACKUP_NEEDS_CONFIG:-0}" == "1" ]]; then
+    echo
+    echo "Backups are installed but NOT running: no off-box destination is set."
+    echo "    1. edit /etc/dullahan/backup.env and set RCLONE_REMOTE"
+    echo "    2. systemctl start dullahan-backup.timer dullahan-restore-drill.timer"
+    echo "    3. prove it:  dullahan-backup && dullahan-restore-drill"
+fi
+if [[ "${BACKUP_ENV_CREATED:-0}" == "1" ]]; then
+    echo
+    echo "Alerting: set ALERT_TO (plus RESEND_API_KEY/EMAIL_FROM) in $ENV_FILE so"
+    echo "--selfcheck can mail you. It checks health, Postgres, ingest-loss counters,"
+    echo "disk, and whether the nightly backup has stopped running."
 fi

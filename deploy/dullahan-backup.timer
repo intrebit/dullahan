@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the dullahan backup nightly
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+# Catch up after downtime: a box that was off at 03:15 still needs a backup.
+Persistent=true
+# Spread the load so backup, dump and any other 03:15 job on the host do not all
+# contend for the same disk at once.
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

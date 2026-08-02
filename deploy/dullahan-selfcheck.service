@@ -1,0 +1,24 @@
+[Unit]
+Description=dullahan operational selfcheck
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dullahan
+Group=dullahan
+WorkingDirectory=/opt/dullahan
+EnvironmentFile=/opt/dullahan/dullahan.env
+# Deliberately NOT After=dullahan.service, and no Requires: reporting that the
+# server is down is the job. A dependency on it would mean the check does not run
+# in precisely the situation it exists for.
+ExecStart=/opt/dullahan/dullahan --selfcheck
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# The state file (counter baselines, alert throttles) lives beside the binary.
+ReadWritePaths=/opt/dullahan
