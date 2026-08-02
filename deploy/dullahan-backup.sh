@@ -54,6 +54,16 @@ command -v age >/dev/null 2>&1 || die "age is not installed (apt install age)"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DEST="$BACKUP_DIR/$STAMP"
+# Two runs in the same second would otherwise share a directory, and the cleanup
+# trap below would then delete the earlier run's good dumps when the second failed.
+# Rare — but the cost is destroying a working backup, so it gets a suffix instead.
+if [[ -e "$DEST" ]]; then
+    n=2
+    while [[ -e "${DEST}-$n" ]]; do n=$((n + 1)); done
+    DEST="${DEST}-$n"
+    STAMP="$(basename "$DEST")"
+    log "a run for this second already exists; using $STAMP"
+fi
 install -d -m 700 "$DEST"
 
 # A partial directory is worse than none: it looks like a backup to anything
@@ -66,17 +76,42 @@ log "dumping globals"
 $PG_SUDO pg_dumpall --globals-only | encrypt_to "$DEST/globals.sql.age" ||
     die "pg_dumpall --globals-only"
 
+# Per-database failures are recorded and reported at the end rather than aborting
+# the run. A single stale name in BACKUP_DATABASES used to kill everything: a test
+# database was dropped, its name stayed in the config, and the whole nightly backup
+# died — including the database that actually mattered. Losing one backup because
+# another is misconfigured is the wrong trade.
+FAILED_DBS=""
 for db in $BACKUP_DATABASES; do
+    if ! $PG_SUDO psql -d postgres -tAc \
+            "SELECT 1 FROM pg_database WHERE datname='$db'" | grep -q 1; then
+        log "ERROR: database '$db' does not exist — skipping it (fix BACKUP_DATABASES)"
+        FAILED_DBS="$FAILED_DBS $db"
+        continue
+    fi
+
     log "dumping $db"
-    # Not piped through a subshell whose exit status would be lost: pipefail plus
-    # an explicit || means a failed pg_dump aborts the run rather than shipping a
-    # truncated, cheerfully-encrypted file.
-    $PG_SUDO pg_dump -Fc --no-owner --no-privileges "$db" |
-        encrypt_to "$DEST/$db.dump.age" || die "pg_dump $db"
-    # An encrypted empty file is 100-odd bytes of header. Anything that small is
-    # a failed dump that pipefail did not catch.
-    [[ $(stat -c%s "$DEST/$db.dump.age") -gt 1024 ]] || die "$db dump is implausibly small"
+    # pipefail plus an explicit check, so a failed pg_dump cannot ship a truncated
+    # but cheerfully-encrypted file.
+    if ! $PG_SUDO pg_dump -Fc --no-owner --no-privileges "$db" |
+            encrypt_to "$DEST/$db.dump.age"; then
+        log "ERROR: pg_dump $db failed"
+        rm -f "$DEST/$db.dump.age"
+        FAILED_DBS="$FAILED_DBS $db"
+        continue
+    fi
+    # An encrypted empty file is 100-odd bytes of header. Anything that small is a
+    # failed dump that pipefail did not catch.
+    if [[ $(stat -c%s "$DEST/$db.dump.age") -le 1024 ]]; then
+        log "ERROR: $db dump is implausibly small"
+        rm -f "$DEST/$db.dump.age"
+        FAILED_DBS="$FAILED_DBS $db"
+        continue
+    fi
 done
+
+# No dump at all is still fatal — there is nothing to keep or upload.
+compgen -G "$DEST/*.dump.age" >/dev/null || die "no database dump succeeded"
 
 log "writing manifest"
 {
@@ -142,6 +177,19 @@ done
 # the bucket instead — docs/deploy.md has the numbers.
 
 log "backup complete: $STAMP ($(du -sh "$DEST" | cut -f1))"
+
+# Reported after the good dumps are safely written and uploaded, so a partial
+# success is kept rather than thrown away — but the run still exits non-zero, so
+# systemd records the failure and the watchdog is told.
+if [[ -n "${FAILED_DBS// /}" ]]; then
+    log "PARTIAL: these databases were NOT backed up:${FAILED_DBS}"
+    log "         everything else in $STAMP is complete and uploaded."
+    [[ -n "$HEALTHCHECK_BACKUP_URL" ]] &&
+        curl -fsS -m 10 --data-raw "partial:${FAILED_DBS}" \
+            "${HEALTHCHECK_BACKUP_URL%/}/fail" >/dev/null 2>&1 || true
+    exit 1
+fi
+
 [[ -n "$HEALTHCHECK_BACKUP_URL" ]] &&
     curl -fsS -m 10 --data-raw "ok $STAMP" "$HEALTHCHECK_BACKUP_URL" >/dev/null 2>&1 || true
 exit 0
