@@ -11,8 +11,11 @@ StandardOutput=journal
 StandardError=journal
 TimeoutStartSec=3600
 
+# Makes sudo unusable even for a root unit; the script uses setpriv instead.
 NoNewPrivileges=true
 PrivateTmp=true
+# Hides /root, so anything reading a dotfile there (rclone's config, most
+# obviously) must be pointed at /etc/dullahan instead.
 ProtectHome=true
 ProtectSystem=full
 ReadWritePaths=/var/backups

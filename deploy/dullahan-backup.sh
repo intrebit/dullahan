@@ -33,11 +33,26 @@ KEEP_MONTHLY="${KEEP_MONTHLY:-3}"
 AGE_RECIPIENTS_FILE="${AGE_RECIPIENTS_FILE:-/etc/dullahan/backup-recipients.txt}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-}"
 HEALTHCHECK_BACKUP_URL="${HEALTHCHECK_BACKUP_URL:-}"
+# Where rclone looks for its remotes. Deliberately NOT the default
+# ~/.config/rclone/rclone.conf that `rclone config` writes: the unit sets
+# ProtectHome=true, so /root is an empty tmpfs to this process and rclone reports
+# `didn't find section in config file` for a remote that works perfectly when you
+# run it by hand. Same trap as sudo-vs-NoNewPrivileges above. Keep the config in
+# /etc/dullahan with the rest of the backup configuration.
+RCLONE_CONFIG="${RCLONE_CONFIG:-/etc/dullahan/rclone.conf}"
+export RCLONE_CONFIG
 # How to reach Postgres as a superuser. The default suits the local-cluster,
 # peer-authentication install that install.sh produces. Override it for a managed
 # or remote database (`PG_SUDO=` with PGHOST/PGPORT/PGUSER set), which also makes
 # this script runnable against a throwaway cluster for testing.
-PG_SUDO="${PG_SUDO-sudo -u postgres}"
+#
+# NOT `sudo -u postgres`, which is the obvious spelling and silently cannot work
+# here: the unit sets NoNewPrivileges=true, and sudo >=1.9 refuses to run at all
+# under that flag — even when it is already root and only dropping privileges.
+# That combination broke every nightly run on the first deploy while manual runs
+# in a normal shell kept succeeding, which is the worst way for a backup to fail.
+# setpriv only ever drops privileges, so the sandbox permits it.
+PG_SUDO="${PG_SUDO-setpriv --reuid=postgres --regid=postgres --clear-groups}"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 die() {
@@ -51,6 +66,23 @@ die() {
 
 command -v age >/dev/null 2>&1 || die "age is not installed (apt install age)"
 [[ -s "$AGE_RECIPIENTS_FILE" ]] || die "no age recipients at $AGE_RECIPIENTS_FILE"
+
+# Fail before dumping rather than after: an unusable remote discovered at upload
+# time means the whole run is wasted, and a run whose upload cannot work is not a
+# backup — it is a local copy on the disk this is meant to survive.
+if [[ -n "$RCLONE_REMOTE" ]]; then
+    command -v rclone >/dev/null 2>&1 || die "RCLONE_REMOTE set but rclone is not installed"
+    [[ -r "$RCLONE_CONFIG" ]] ||
+        die "RCLONE_REMOTE=$RCLONE_REMOTE but no readable rclone config at $RCLONE_CONFIG"
+    rclone listremotes | grep -qx "${RCLONE_REMOTE%%:*}:" ||
+        die "remote '${RCLONE_REMOTE%%:*}:' is not defined in $RCLONE_CONFIG"
+fi
+
+# Probe the connection before anything else. Without this the first failure is
+# `pg_dumpall`, after a run directory already exists — so the trap deletes it and
+# the only trace of 450 hours of failed backups was a changed mtime on $BACKUP_DIR.
+$PG_SUDO psql -d postgres -tAc 'SELECT 1' >/dev/null 2>&1 ||
+    die "cannot reach Postgres via PG_SUDO='$PG_SUDO' (run it by hand to see why)"
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 DEST="$BACKUP_DIR/$STAMP"
@@ -126,17 +158,23 @@ log "writing manifest"
     (cd "$DEST" && sha256sum ./*.age)
 } > "$DEST/MANIFEST"
 
+# From here the run is complete and self-describing, so disarm the cleanup trap
+# BEFORE the network step. It used to fire after a failed upload and delete a
+# perfectly good, checksummed set of dumps — turning "we have a local backup but
+# could not ship it" into "we have nothing", which is strictly worse. An upload
+# failure is still a failure (non-zero exit, watchdog pinged); it just no longer
+# costs you the backup.
+trap - EXIT
+chmod -R go-rwx "$DEST"
+
 if [[ -n "$RCLONE_REMOTE" ]]; then
-    command -v rclone >/dev/null 2>&1 || die "RCLONE_REMOTE set but rclone is not installed"
     log "uploading to $RCLONE_REMOTE/$STAMP"
-    rclone copy --checksum "$DEST" "$RCLONE_REMOTE/$STAMP" || die "rclone upload"
+    rclone copy --checksum "$DEST" "$RCLONE_REMOTE/$STAMP" ||
+        die "rclone upload failed — the complete local copy is KEPT at $DEST"
 else
     log "WARNING: RCLONE_REMOTE is unset — this backup exists only on this host,"
     log "         which is the same disk it is meant to survive the loss of."
 fi
-
-trap - EXIT
-chmod -R go-rwx "$DEST"
 
 # Retention: keep the newest KEEP_DAILY runs outright, plus the newest run of
 # each of the last KEEP_WEEKLY ISO weeks and KEEP_MONTHLY months. Grandfathering

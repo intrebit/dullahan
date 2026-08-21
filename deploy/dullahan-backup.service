@@ -5,7 +5,8 @@ Wants=network-online.target postgresql.service
 
 [Service]
 Type=oneshot
-# Root: the script calls `sudo -u postgres pg_dump` and writes under /var/backups.
+# Root: the script drops to the postgres user for pg_dump (via setpriv, not
+# sudo — see NoNewPrivileges below) and writes under /var/backups.
 User=root
 ExecStart=/usr/local/bin/dullahan-backup
 StandardOutput=journal
@@ -16,8 +17,12 @@ StandardError=journal
 # --failed`.
 TimeoutStartSec=1800
 
+# Keep in mind when editing the script: this makes sudo unusable, even for a
+# root unit dropping privileges. Use setpriv.
 NoNewPrivileges=true
 PrivateTmp=true
+# Hides /root, so anything reading a dotfile there (rclone's config, most
+# obviously) must be pointed at /etc/dullahan instead.
 ProtectHome=true
 ProtectSystem=full
 ReadWritePaths=/var/backups
