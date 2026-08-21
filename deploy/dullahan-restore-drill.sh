@@ -18,6 +18,10 @@ CONF="${DULLAHAN_BACKUP_ENV:-/etc/dullahan/backup.env}"
 
 BACKUP_DIR="${BACKUP_DIR:-/var/backups/dullahan}"
 AGE_IDENTITY_FILE="${AGE_IDENTITY_FILE:-/etc/dullahan/backup-identity.txt}"
+# See dullahan-backup.sh: ProtectHome=true hides /root, so rclone cannot find the
+# config `rclone config` writes there. Keep it in /etc/dullahan.
+RCLONE_CONFIG="${RCLONE_CONFIG:-/etc/dullahan/rclone.conf}"
+export RCLONE_CONFIG
 RCLONE_REMOTE="${RCLONE_REMOTE:-}"
 HEALTHCHECK_DRILL_URL="${HEALTHCHECK_DRILL_URL:-}"
 DRILL_DB="${DRILL_DB:-dullahan_restore_drill}"
@@ -26,8 +30,9 @@ DRILL_DB="${DRILL_DB:-dullahan_restore_drill}"
 DRILL_EXPECT_TABLES="${DRILL_EXPECT_TABLES:-analytics_events blog_posts daily_salts products sites site_config}"
 DRILL_SOURCE_DB="${DRILL_SOURCE_DB:-dullahan}"
 # See dullahan-backup.sh: override for a managed/remote database, or to run this
-# drill against a throwaway cluster.
-PG_SUDO="${PG_SUDO-sudo -u postgres}"
+# drill against a throwaway cluster. Deliberately setpriv and not `sudo -u
+# postgres` — sudo cannot run under the unit's NoNewPrivileges=true.
+PG_SUDO="${PG_SUDO-setpriv --reuid=postgres --regid=postgres --clear-groups}"
 
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
@@ -50,8 +55,14 @@ command -v age >/dev/null 2>&1 || die "age is not installed"
 
 if [[ -n "$RCLONE_REMOTE" ]]; then
     command -v rclone >/dev/null 2>&1 || die "RCLONE_REMOTE set but rclone is missing"
+    [[ -r "$RCLONE_CONFIG" ]] ||
+        die "RCLONE_REMOTE=$RCLONE_REMOTE but no readable rclone config at $RCLONE_CONFIG"
     log "listing $RCLONE_REMOTE"
-    NEWEST="$(rclone lsf --dirs-only "$RCLONE_REMOTE" 2>/dev/null | tr -d '/' | sort -r | head -1)"
+    # stderr is NOT discarded: hiding it turns "the config is unreadable" into the
+    # misleading "no backups found", which sends you looking in the wrong place.
+    if ! NEWEST="$(rclone lsf --dirs-only "$RCLONE_REMOTE" | tr -d '/' | sort -r | head -1)"; then
+        die "could not list $RCLONE_REMOTE (see rclone's error above)"
+    fi
     [[ -n "$NEWEST" ]] || die "no backups found at $RCLONE_REMOTE"
     log "restoring from remote copy $NEWEST"
     rclone copy "$RCLONE_REMOTE/$NEWEST" "$WORK" || die "could not download $NEWEST"
