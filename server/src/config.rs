@@ -105,7 +105,13 @@ impl Config {
                 Some(EmailConfig {
                     resend_api_key: api_key,
                     from,
-                    from_name: env::var("EMAIL_FROM_NAME").unwrap_or_else(|_| "dullahan".into()),
+                    // No default display name, on purpose. This goes into the
+                    // From header of every tenant's mail, and the product's name
+                    // has no business in a client's inbox — one of them is a dog
+                    // groomer who has never heard of it. Empty means the header
+                    // is the bare address; a tenant that wants a name sets
+                    // `sites.email_from_name` (e.g. "New enquiry").
+                    from_name: env::var("EMAIL_FROM_NAME").unwrap_or_default(),
                     timeout: Duration::from_secs(10),
                 })
             }

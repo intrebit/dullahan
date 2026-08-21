@@ -55,6 +55,28 @@ pub async fn compute(pool: &PgPool, site: &str, now_ms: i64) -> sqlx::Result<Dig
     })
 }
 
+/// Has this site ever recorded a single analytics event?
+///
+/// This is the digest opt-out, and it is deliberately based on measurement
+/// rather than on a `digest_enabled` column: a contact-form-only tenant has no
+/// tracker and therefore no numbers, and a weekly table of zeros is worse than
+/// silence — it advertises a product the recipient does not use and invites
+/// "why is everything zero?".
+///
+/// Note "never measured", not "zero this week". A tracked site whose traffic
+/// collapses to nothing still gets its digest: that collapse is precisely what
+/// the email exists to surface, and suppressing it would turn the one useful
+/// alarm into silence.
+///
+/// Index-backed by `analytics_events_site_ts_idx`, and EXISTS stops at the first
+/// row, so this costs an index probe per site per week.
+async fn ever_measured(pool: &PgPool, site: &str) -> sqlx::Result<bool> {
+    sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM analytics_events WHERE site = $1)")
+        .bind(site)
+        .fetch_one(pool)
+        .await
+}
+
 /// Send (or, when `dry_run`, print) a digest for every configured site.
 ///
 /// Iterates the active tenants in the `sites` table. A site with no
@@ -86,6 +108,20 @@ pub async fn run(
             tracing::warn!(site, "no contact_to recipient; skipping digest");
             continue;
         };
+        // Opt out by measurement — see ever_measured(). On a query error, fall
+        // through and send: a transient database hiccup must not silently stop a
+        // paying tenant's weekly report.
+        match ever_measured(pool, site).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::info!(site, "no analytics events ever recorded; skipping digest");
+                continue;
+            }
+            Err(err) => {
+                tracing::warn!(site, error = %err, "could not check for events; sending anyway");
+            }
+        }
+
         let digest = match compute(pool, site, now_ms).await {
             Ok(d) => d,
             Err(err) => {
@@ -172,9 +208,13 @@ pub fn render_html(d: &Digest) -> String {
     html.push_str(&list_section("Top countries", &d.top_countries));
     html.push_str(&list_section("Devices", &d.top_devices));
 
+    // No product name here on purpose. These reports go to tenants who have no
+    // relationship with dullahan and no reason to learn its name from their own
+    // weekly numbers — one of them is a dog groomer. Keep the privacy claim,
+    // which is about their visitors' data and is the part they care about.
     html.push_str(
         "<p style=\"color:#999;font-size:12px;margin-top:32px\">\
-         Sent by dullahan. No cookies, no tracking of you — just your own site's aggregate numbers.</p>",
+         No cookies, no tracking of you — just your own site's aggregate numbers.</p>",
     );
     html.push_str("</div>");
     html
