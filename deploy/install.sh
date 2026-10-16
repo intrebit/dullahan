@@ -178,7 +178,7 @@ echo "=========================================="
 echo "  health:    curl https://${DOMAIN}/health"
 echo "  logs:      journalctl -u dullahan -f"
 echo "  timers:    systemctl list-timers 'dullahan*'"
-echo "  redeploy:  re-run install.sh (rebuilds binary), or set up CD — docs/deploy.md"
+echo "  redeploy:  re-run install.sh (rebuilds binary), or push to master (CI deploys)"
 echo "=========================================="
 if [[ "${ADMIN_TOKEN_GENERATED:-0}" == "1" ]]; then
     echo
