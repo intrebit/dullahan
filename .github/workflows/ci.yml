@@ -151,8 +151,7 @@ jobs:
   #
   # Requires four repo secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
   # DEPLOY_KNOWN_HOSTS (and optionally DEPLOY_PORT). Without them the job fails
-  # fast on the guard below instead of hanging on an SSH prompt. One-time server
-  # setup is in docs/deploy.md.
+  # fast on the guard below instead of hanging on an SSH prompt.
   deploy:
     name: deploy (master -> server)
     needs: [lint, server, audit, docker]
@@ -190,7 +189,7 @@ jobs:
           [[ -n "$KEY" ]]         || missing+=(DEPLOY_SSH_KEY)
           [[ -n "$KNOWN_HOSTS" ]] || missing+=(DEPLOY_KNOWN_HOSTS)
           if ((${#missing[@]})); then
-            echo "missing repo secrets: ${missing[*]} — see docs/deploy.md" >&2
+            echo "missing repo secrets: ${missing[*]}" >&2
             exit 1
           fi
       - name: Build release binary
