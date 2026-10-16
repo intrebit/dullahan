@@ -123,6 +123,19 @@ jobs:
         # so rsa code is never linked into the runtime binary.
         run: cargo audit --ignore RUSTSEC-2023-0071
 
+  # A credential in the tracked files fails the run, on every change and on the
+  # weekly schedule. The history was scanned by hand on 16 Oct 2026 (36 commits,
+  # clean), so the job needs no exceptions.
+  secret_scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: >-
+          docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:v8.18.4
+          detect --no-git --source /repo --redact --no-banner --exit-code 1
+
   docker:
     name: docker (build + smoke)
     runs-on: ubuntu-latest
@@ -165,7 +178,7 @@ jobs:
   # fast on the guard below instead of hanging on an SSH prompt.
   deploy:
     name: deploy (master -> server)
-    needs: [lint, server, audit, docker]
+    needs: [lint, server, audit, docker, secret_scan]
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     # Pinned, not ubuntu-latest: the binary must run against the server's glibc,
     # so build on an image no newer than it. 22.04 ships glibc 2.35, old enough
