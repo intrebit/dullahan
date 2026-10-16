@@ -278,8 +278,9 @@ pub async fn delete_site(
         .execute(&state.pool)
         .await
         .map_err(|e| {
-            if is_pg_code(&e, "23503") {
-                // Foreign key violation: content still references this tenant.
+            // Content still references this tenant. Postgres 18 reports an
+            // ON DELETE RESTRICT refusal as 23001; earlier versions as 23503.
+            if is_pg_code(&e, "23503") || is_pg_code(&e, "23001") {
                 StatusCode::CONFLICT
             } else {
                 internal("sites delete failed", &e)
