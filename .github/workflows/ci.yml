@@ -66,7 +66,7 @@ jobs:
         run: |
           cargo run --locked --bin dullahan &
           PID=$!
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             sleep 1
             curl -fsS http://127.0.0.1:3001/health && break
           done
@@ -93,7 +93,7 @@ jobs:
       - name: Every migration is listed in the manifest
         working-directory: server
         run: |
-          diff <(ls migrations/*.sql | sort) <(awk '{print $2}' migrations.sha384 | sort) || {
+          diff <(printf '%s\n' migrations/*.sql | sort) <(awk '{print $2}' migrations.sha384 | sort) || {
             echo "::error::migrations.sha384 is out of date. If you ADDED a migration, run:"
             echo "::error::  cd server && sha384sum migrations/*.sql > migrations.sha384"
             echo "::error::If you EDITED an existing one, don't — add a new migration instead."
@@ -164,7 +164,7 @@ jobs:
             -e ADMIN_TOKEN=ci-token \
             -e BIND_ADDR=127.0.0.1:3001 \
             dullahan:ci
-          for i in $(seq 1 30); do sleep 1; curl -fsS http://127.0.0.1:3001/health && break; done
+          for _ in $(seq 1 30); do sleep 1; curl -fsS http://127.0.0.1:3001/health && break; done
           curl -fsS http://127.0.0.1:3001/health
           docker logs dullahan
           docker rm -f dullahan
