@@ -5,7 +5,7 @@
 //! backed by Postgres. It is meant to be run (`cargo install dullahan`), not
 //! consumed as a library dependency.
 //!
-//! For install and the privacy model see the
+//! For install, the endpoint list and the privacy model see the
 //! [README](https://github.com/intrebit/dullahan#readme).
 //!
 //! # Embedding
