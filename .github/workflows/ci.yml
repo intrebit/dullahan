@@ -207,8 +207,10 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           install -d -m 700 ~/.ssh
-          # Through env rather than ${{ }} interpolation: a key containing shell
-          # metacharacters would otherwise be pasted into the script body.
+          # Through env rather than expression interpolation: a key containing
+          # shell metacharacters would otherwise be pasted into the script body.
+          # Never write the expression delimiters literally in a comment here:
+          # Actions parses them anyway, and an empty one rejects the whole file.
           printf '%s\n' "$KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
           # Pinned host key, so a hijacked DNS record cannot collect the key.
