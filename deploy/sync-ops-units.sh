@@ -70,6 +70,7 @@ printf '\nScripts (/usr/local/bin)\n'
 sync "$SRC/dullahan-deploy.sh"        /usr/local/bin/dullahan-deploy        755
 sync "$SRC/dullahan-backup.sh"        /usr/local/bin/dullahan-backup        755
 sync "$SRC/dullahan-restore-drill.sh" /usr/local/bin/dullahan-restore-drill 755
+sync "$SRC/dullahan-backup-freshness.sh" /usr/local/bin/dullahan-backup-freshness 755
 if [[ -f $SRC/register-site.sh ]]; then
     sync "$SRC/register-site.sh" /usr/local/bin/dullahan-register-site 755
 fi
@@ -78,6 +79,7 @@ printf '\nUnits (/etc/systemd/system)\n'
 units=(
     dullahan.service
     dullahan-backup.service dullahan-backup.timer
+    dullahan-backup-freshness.service dullahan-backup-freshness.timer
     dullahan-restore-drill.service dullahan-restore-drill.timer
     dullahan-digest.service dullahan-digest.timer
     dullahan-selfcheck.service dullahan-selfcheck.timer

@@ -1,0 +1,21 @@
+[Unit]
+Description=dullahan off-box backup freshness check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Root: the rclone config holding the bucket credentials is root-only.
+User=root
+ExecStart=/usr/local/bin/dullahan-backup-freshness
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=300
+
+# The same sandbox as dullahan-backup, so a check that passes here proves the
+# backup's own view of the remote, not a shell's.
+NoNewPrivileges=true
+PrivateTmp=true
+# Hides /root, so rclone must find its config in /etc/dullahan.
+ProtectHome=true
+ProtectSystem=full
