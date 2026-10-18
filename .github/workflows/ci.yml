@@ -78,7 +78,7 @@ jobs:
     if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v5
-      # The schema is frozen as of v0.1.4: migrations are append-only from here.
+      # The schema is frozen as of v0.2.0: migrations are append-only from here.
       # sqlx records the SHA-384 of each migration in `_sqlx_migrations` and
       # refuses to start if it no longer matches, so editing a released migration
       # does not produce a merge conflict or a test failure — it produces a server

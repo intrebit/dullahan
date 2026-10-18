@@ -37,6 +37,10 @@ frontend (e.g. the storefront template), not with this binary.
 
 A Docker image and a one-shot Debian/Ubuntu VM installer are in the repo.
 
+> **Upgrading from 0.1.x:** 0.2.0 squashed the schema, so it will not start on a
+> 0.1.x database. It refuses without changing anything; start it on a fresh
+> database.
+
 ## What's in the binary
 
 - **Analytics** — `/collect` ingest + a `/stats/*` read API. Cookie-free, no

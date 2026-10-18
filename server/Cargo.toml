@@ -1,6 +1,6 @@
 [package]
 name = "dullahan"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Self-hosted, cookie-free backend for small sites: privacy-first analytics, a blog and product API, and contact forms. One Rust binary plus Postgres."

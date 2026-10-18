@@ -48,6 +48,16 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 > **Set `ADMIN_TOKEN` on any public deploy.** Without it, `/stats/*` and blog reads are open to anyone (blog writes are refused). The server logs a warning when it's unset.
 
+To try it locally with Docker instead: `ADMIN_TOKEN=$(openssl rand -hex 24) docker compose up --build`.
+
+## Deploy on a server
+
+[`deploy/install.sh`](deploy/install.sh) sets up a fresh Debian or Ubuntu box in one run: Postgres, Caddy with automatic HTTPS, the systemd service, nightly encrypted backups, a monthly restore drill, health alerts, and the weekly digest email. Usage is at the top of the script.
+
+## Upgrading from 0.1.x
+
+0.2.0 squashed the schema into a single migration, so it will not start on a database created by 0.1.x (`migration 2 was previously applied but is missing`). Nothing is changed when it refuses. Start 0.2.0 on a fresh database. From 0.2.0 on, migrations are append-only.
+
 ## Endpoints
 
 Each site is registered once under `/sites`, and content and stats calls name it with `?site=<id>`. A token is either the global `ADMIN_TOKEN`, which covers every site, or a per-site token, which covers its own site only.
