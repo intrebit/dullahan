@@ -67,7 +67,7 @@ if [[ -n "$RCLONE_REMOTE" ]]; then
     log "restoring from remote copy $NEWEST"
     rclone copy "$RCLONE_REMOTE/$NEWEST" "$WORK" || die "could not download $NEWEST"
 else
-    NEWEST="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r | head -1)"
+    NEWEST="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | { grep -E '^20[0-9]{6}T[0-9]{6}Z$' || true; } | sort -r | head -1)"
     [[ -n "$NEWEST" ]] || die "no backups found in $BACKUP_DIR"
     log "no remote configured; restoring from LOCAL copy $NEWEST (this does not"
     log "prove off-box recoverability — configure RCLONE_REMOTE)"
