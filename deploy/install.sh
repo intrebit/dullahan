@@ -115,6 +115,7 @@ for unit in dullahan.service \
             dullahan-digest.service dullahan-digest.timer \
             dullahan-selfcheck.service dullahan-selfcheck.timer \
             dullahan-backup.service dullahan-backup.timer \
+            dullahan-backup-freshness.service dullahan-backup-freshness.timer \
             dullahan-restore-drill.service dullahan-restore-drill.timer; do
     install -m 644 "$REPO_DIR/deploy/$unit" "/etc/systemd/system/$unit"
 done
@@ -125,6 +126,7 @@ echo "==> helper scripts"
 install -m 755 -o root -g root "$REPO_DIR/deploy/dullahan-deploy.sh" /usr/local/bin/dullahan-deploy
 install -m 755 -o root -g root "$REPO_DIR/deploy/dullahan-backup.sh" /usr/local/bin/dullahan-backup
 install -m 755 -o root -g root "$REPO_DIR/deploy/dullahan-restore-drill.sh" /usr/local/bin/dullahan-restore-drill
+install -m 755 -o root -g root "$REPO_DIR/deploy/dullahan-backup-freshness.sh" /usr/local/bin/dullahan-backup-freshness
 
 echo "==> backup config"
 install -d -m 700 -o root -g root /etc/dullahan
@@ -158,9 +160,9 @@ echo "==> timers"
 # off-box copy of the key first, and a backup run that silently lands only on
 # this disk is the failure mode worth refusing to set up automatically.
 systemctl enable --now dullahan-digest.timer dullahan-selfcheck.timer
-systemctl enable dullahan-backup.timer dullahan-restore-drill.timer
+systemctl enable dullahan-backup.timer dullahan-restore-drill.timer dullahan-backup-freshness.timer
 if grep -q '^RCLONE_REMOTE=.\+' /etc/dullahan/backup.env 2>/dev/null; then
-    systemctl start dullahan-backup.timer dullahan-restore-drill.timer
+    systemctl start dullahan-backup.timer dullahan-restore-drill.timer dullahan-backup-freshness.timer
 else
     BACKUP_NEEDS_CONFIG=1
 fi
@@ -203,7 +205,7 @@ if [[ "${BACKUP_NEEDS_CONFIG:-0}" == "1" ]]; then
     echo
     echo "Backups are installed but NOT running: no off-box destination is set."
     echo "    1. edit /etc/dullahan/backup.env and set RCLONE_REMOTE"
-    echo "    2. systemctl start dullahan-backup.timer dullahan-restore-drill.timer"
+    echo "    2. systemctl start dullahan-backup.timer dullahan-restore-drill.timer dullahan-backup-freshness.timer"
     echo "    3. prove it:  dullahan-backup && dullahan-restore-drill"
 fi
 if [[ "${BACKUP_ENV_CREATED:-0}" == "1" ]]; then

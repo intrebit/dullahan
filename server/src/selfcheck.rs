@@ -24,6 +24,16 @@ const WATCHED_COUNTERS: [&str; 3] = [
     "dullahan_ingest_queue_closed_total",
 ];
 
+/// Timer-driven jobs whose failure nothing else reports. systemd records a
+/// failed oneshot, but only `systemctl --failed` shows it — and nobody runs that.
+/// Units not installed on this host read as inactive, so listing one costs nothing.
+const WATCHED_UNITS: [&str; 4] = [
+    "dullahan-backup.service",
+    "dullahan-backup-freshness.service",
+    "dullahan-restore-drill.service",
+    "dullahan-digest.service",
+];
+
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One thing found wrong. `key` is stable so repeat alerts can be throttled per
@@ -92,6 +102,7 @@ pub async fn run(config: &Config, dry_run: bool) -> anyhow::Result<Vec<Finding>>
         config.alert_backup_max_age_hours,
         now_ms,
     ));
+    findings.extend(check_units(&WATCHED_UNITS));
 
     for f in &findings {
         tracing::warn!(check = %f.key, "{}", f.detail);
@@ -346,6 +357,62 @@ fn check_backup_freshness(dir: &str, max_age_hours: u32, now_ms: i64) -> Vec<Fin
     }
 }
 
+/// Alert on any watched unit systemd has marked failed.
+///
+/// This is what catches a backup that ran but could not upload: the local copy is
+/// kept, so `check_backup_freshness` stays green while the off-box copy goes
+/// stale. It also covers the off-box freshness check and the restore drill, whose
+/// only way to fail is to exit non-zero.
+///
+/// A failed oneshot stays failed until its next run succeeds, so for the monthly
+/// drill this repeats (throttled) until someone re-runs it or `reset-failed`s it.
+/// That is deliberate: a broken restore is not something to hear about once.
+///
+/// Like `check_disk`, a `systemctl` that cannot answer is logged, not reported.
+fn check_units(units: &[&str]) -> Vec<Finding> {
+    let output = match std::process::Command::new("systemctl")
+        .args(["show", "--property=Id,ActiveState,Result"])
+        .args(units)
+        .output()
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        Ok(_) | Err(_) => {
+            tracing::warn!("could not read unit states from systemctl");
+            return Vec::new();
+        }
+    };
+    failed_units(&String::from_utf8_lossy(&output))
+        .into_iter()
+        .map(|(id, result)| Finding {
+            key: format!("unit:{id}"),
+            detail: format!(
+                "{id} failed (result: {result}) — inspect with journalctl -u {id} -n 50; \
+                 the alert clears once it runs successfully"
+            ),
+        })
+        .collect()
+}
+
+/// `(Id, Result)` of every failed unit in `systemctl show` output: one block per
+/// unit, blocks separated by a blank line, properties in no guaranteed order.
+fn failed_units(text: &str) -> Vec<(String, String)> {
+    text.split("\n\n")
+        .filter_map(|block| {
+            let prop = |key: &str| {
+                block.lines().find_map(|l| {
+                    l.strip_prefix(key)
+                        .and_then(|rest| rest.strip_prefix('='))
+                        .map(str::to_string)
+                })
+            };
+            if prop("ActiveState")? != "failed" {
+                return None;
+            }
+            Some((prop("Id")?, prop("Result").unwrap_or_default()))
+        })
+        .collect()
+}
+
 /// Newest `YYYYMMDDTHHMMSSZ` directory name, as epoch ms. Names that do not parse
 /// are ignored rather than treated as ancient — an unrelated directory must not
 /// raise a false "backups have stopped".
@@ -431,8 +498,8 @@ fn render_alert(findings: &[&Finding]) -> String {
         .collect();
     format!(
         "<p>dullahan selfcheck found {} problem{}:</p><ul>{items}</ul>\
-         <p>Inspect with <code>journalctl -u dullahan -n 50</code> and \
-         <code>systemctl status dullahan</code>.</p>",
+         <p>For the server, inspect <code>journalctl -u dullahan -n 50</code>; \
+         for backups, <code>journalctl -u dullahan-backup -n 50</code>.</p>",
         findings.len(),
         if findings.len() == 1 { "" } else { "s" }
     )
@@ -568,6 +635,48 @@ axum_http_requests_total{method=\"GET\"} 900
         assert!(check_backup_freshness(path, 0, now).is_empty());
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn failed_units_reads_blocks_in_any_property_order() {
+        // Real `systemctl show` output: Result comes first, not in the order asked.
+        let text = "\
+Result=success
+Id=dullahan-backup.service
+ActiveState=inactive
+
+Result=exit-code
+Id=dullahan-backup-freshness.service
+ActiveState=failed
+
+ActiveState=failed
+Id=dullahan-restore-drill.service
+Result=timeout
+";
+        assert_eq!(
+            failed_units(text),
+            vec![
+                (
+                    "dullahan-backup-freshness.service".to_string(),
+                    "exit-code".to_string()
+                ),
+                (
+                    "dullahan-restore-drill.service".to_string(),
+                    "timeout".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_units_ignores_healthy_and_absent_units() {
+        // A unit that is not installed reads as inactive/success, exactly like an
+        // idle one — neither is a failure.
+        let text = "Id=dullahan-nonexistent.service\nActiveState=inactive\nResult=success\n";
+        assert!(failed_units(text).is_empty());
+        assert!(failed_units("").is_empty());
+        // `ActiveStateX=failed` is a different property, not a prefix match.
+        assert!(failed_units("Id=x.service\nActiveStateX=failed\n").is_empty());
     }
 
     #[test]

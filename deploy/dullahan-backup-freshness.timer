@@ -1,0 +1,11 @@
+[Unit]
+Description=Check that an off-box dullahan backup landed recently
+
+[Timer]
+# Well after the 03:15 backup window (plus its 15 min spread), so a slow run is
+# not reported as missing.
+OnCalendar=*-*-* 06:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
