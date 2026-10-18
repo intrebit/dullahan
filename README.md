@@ -74,7 +74,7 @@ No cookies, no fingerprinting, **no raw IP storage, ever.** The surface is delib
 
 ## Security
 
-Found a vulnerability? Please email hello@intrebit.com. Do not open a public issue.
+Found a vulnerability? Report it privately through [GitHub](https://github.com/intrebit/dullahan/security/advisories/new) or email hello@intrebit.com. Do not open a public issue.
 
 ## Who makes it
 

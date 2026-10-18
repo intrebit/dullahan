@@ -46,6 +46,8 @@ A Docker image and a one-shot Debian/Ubuntu VM installer are in the repo.
 - **Blog / content API** — `/posts` CRUD with an atomic per-post view counter.
   Stores raw Markdown; your frontend renders it.
 - **Contact** — `/contact` takes a form POST and emails it (via Resend).
+- **Products** — `/products`, a headless product listing for a simple shop, with
+  the same auth model as the blog.
 - Plus self-applying SQL migrations, per-IP rate limiting, security headers, and
   a Prometheus `/metrics` endpoint.
 
