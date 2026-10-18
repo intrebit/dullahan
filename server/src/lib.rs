@@ -5,11 +5,8 @@
 //! backed by Postgres. It is meant to be run (`cargo install dullahan`), not
 //! consumed as a library dependency.
 //!
-//! For install and the privacy model see the
-//! [README](https://github.com/intrebit/dullahan#readme); for the full `/stats/*`
-//! reference and configuration, see
-//! [`docs/api.md`](https://github.com/intrebit/dullahan/blob/master/docs/api.md)
-//! and [`docs/deploy.md`](https://github.com/intrebit/dullahan/blob/master/docs/deploy.md).
+//! For install, the endpoint list and the privacy model see the
+//! [README](https://github.com/intrebit/dullahan#readme).
 //!
 //! # Embedding
 //!

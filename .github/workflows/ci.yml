@@ -4,13 +4,17 @@ on:
   push:
     branches: [master, main]
   pull_request:
+  # Mondays 07:00 UTC: the dependency audit and the secret scan, nothing else.
+  schedule:
+    - cron: "0 7 * * 1"
 
 jobs:
   lint:
     name: lint (fmt + clippy)
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -27,6 +31,7 @@ jobs:
   server:
     name: server (cargo test)
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     services:
       postgres:
         image: postgres:16
@@ -43,7 +48,7 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/dullahan_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -61,7 +66,7 @@ jobs:
         run: |
           cargo run --locked --bin dullahan &
           PID=$!
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             sleep 1
             curl -fsS http://127.0.0.1:3001/health && break
           done
@@ -70,8 +75,9 @@ jobs:
   migrations:
     name: migrations (frozen)
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # The schema is frozen as of v0.1.4: migrations are append-only from here.
       # sqlx records the SHA-384 of each migration in `_sqlx_migrations` and
       # refuses to start if it no longer matches, so editing a released migration
@@ -87,7 +93,7 @@ jobs:
       - name: Every migration is listed in the manifest
         working-directory: server
         run: |
-          diff <(ls migrations/*.sql | sort) <(awk '{print $2}' migrations.sha384 | sort) || {
+          diff <(printf '%s\n' migrations/*.sql | sort) <(awk '{print $2}' migrations.sha384 | sort) || {
             echo "::error::migrations.sha384 is out of date. If you ADDED a migration, run:"
             echo "::error::  cd server && sha384sum migrations/*.sql > migrations.sha384"
             echo "::error::If you EDITED an existing one, don't — add a new migration instead."
@@ -97,8 +103,12 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    # Advisories arrive from upstream, not from a commit: on pushes and pull
+    # requests this job only reports. On the Monday schedule it fails the run,
+    # and GitHub emails the repository's watchers.
+    continue-on-error: ${{ github.event_name != 'schedule' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -113,9 +123,23 @@ jobs:
         # so rsa code is never linked into the runtime binary.
         run: cargo audit --ignore RUSTSEC-2023-0071
 
+  # A credential in the tracked files fails the run, on every change and on the
+  # weekly schedule. The history was scanned by hand on 16 Oct 2026 (36 commits,
+  # clean), so the job needs no exceptions.
+  secret_scan:
+    name: secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - run: >-
+          docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:v8.18.4
+          detect --no-git --source /repo --redact --no-banner --exit-code 1
+
   docker:
     name: docker (build + smoke)
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     services:
       postgres:
         image: postgres:16
@@ -130,7 +154,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build image
         run: docker build -t dullahan:ci ./server
       - name: Run + smoke (/health)
@@ -140,7 +164,7 @@ jobs:
             -e ADMIN_TOKEN=ci-token \
             -e BIND_ADDR=127.0.0.1:3001 \
             dullahan:ci
-          for i in $(seq 1 30); do sleep 1; curl -fsS http://127.0.0.1:3001/health && break; done
+          for _ in $(seq 1 30); do sleep 1; curl -fsS http://127.0.0.1:3001/health && break; done
           curl -fsS http://127.0.0.1:3001/health
           docker logs dullahan
           docker rm -f dullahan
@@ -149,14 +173,15 @@ jobs:
   # it on the server. The binary is the only artifact: sqlx::migrate! embeds the
   # migrations, so nothing else needs to travel.
   #
-  # Requires four repo secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY,
-  # DEPLOY_KNOWN_HOSTS (and optionally DEPLOY_PORT). Without them the job fails
-  # fast on the guard below instead of hanging on an SSH prompt. One-time server
-  # setup is in docs/deploy.md.
+  # Off unless the repo variable DEPLOY_ENABLED is "true", so forks and clones
+  # without a server stay green. Once on, it requires four repo secrets:
+  # DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, DEPLOY_KNOWN_HOSTS (and optionally
+  # DEPLOY_PORT). Without them the job fails fast on the guard below instead of
+  # hanging on an SSH prompt.
   deploy:
     name: deploy (master -> server)
-    needs: [lint, server, audit, docker]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [lint, server, audit, docker, secret_scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && vars.DEPLOY_ENABLED == 'true'
     # Pinned, not ubuntu-latest: the binary must run against the server's glibc,
     # so build on an image no newer than it. 22.04 ships glibc 2.35, old enough
     # for Debian 12 (2.36) and Ubuntu 22.04+. Bump only alongside the server.
@@ -172,7 +197,7 @@ jobs:
     env:
       HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -190,7 +215,7 @@ jobs:
           [[ -n "$KEY" ]]         || missing+=(DEPLOY_SSH_KEY)
           [[ -n "$KNOWN_HOSTS" ]] || missing+=(DEPLOY_KNOWN_HOSTS)
           if ((${#missing[@]})); then
-            echo "missing repo secrets: ${missing[*]} — see docs/deploy.md" >&2
+            echo "missing repo secrets: ${missing[*]}" >&2
             exit 1
           fi
       - name: Build release binary
@@ -208,8 +233,10 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
           install -d -m 700 ~/.ssh
-          # Through env rather than ${{ }} interpolation: a key containing shell
-          # metacharacters would otherwise be pasted into the script body.
+          # Through env rather than expression interpolation: a key containing
+          # shell metacharacters would otherwise be pasted into the script body.
+          # Never write the expression delimiters literally in a comment here:
+          # Actions parses them anyway, and an empty one rejects the whole file.
           printf '%s\n' "$KEY" > ~/.ssh/id_deploy
           chmod 600 ~/.ssh/id_deploy
           # Pinned host key, so a hijacked DNS record cannot collect the key.

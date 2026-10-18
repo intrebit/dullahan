@@ -5,9 +5,8 @@
 [![CI](https://github.com/intrebit/dullahan/actions/workflows/ci.yml/badge.svg)](https://github.com/intrebit/dullahan/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/intrebit/dullahan/blob/master/LICENSE)
 
-A self-hosted, cookie-free backend for small sites — privacy-first analytics, a
-headless blog/content API, and a contact endpoint, in a single Rust binary that
-serves its own browser tracker. Bring a Postgres; that's the only dependency.
+Self-hosted, cookie-free backend for small sites: privacy-first analytics, a
+blog and product API, and contact forms. One Rust binary plus Postgres.
 
 Named for the headless rider of Irish folklore: a backend with no front end of
 its own, built because wiring up a tracker, a CMS, and a contact form on every
@@ -47,13 +46,14 @@ A Docker image and a one-shot Debian/Ubuntu VM installer are in the repo.
 - **Blog / content API** — `/posts` CRUD with an atomic per-post view counter.
   Stores raw Markdown; your frontend renders it.
 - **Contact** — `/contact` takes a form POST and emails it (via Resend).
+- **Products** — `/products`, a headless product listing for a simple shop, with
+  the same auth model as the blog.
 - Plus self-applying SQL migrations, per-IP rate limiting, security headers, and
   a Prometheus `/metrics` endpoint.
 
 ## Docs
 
-Full quick start, every `/stats/*` endpoint, configuration, the privacy model,
-and the self-host hardening checklist live in the repository:
-**<https://github.com/intrebit/dullahan>**
+The quick start, every endpoint and the privacy model are in the repository's
+README: **<https://github.com/intrebit/dullahan#readme>**
 
 License: MIT.

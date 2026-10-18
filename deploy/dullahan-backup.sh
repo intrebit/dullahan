@@ -212,7 +212,7 @@ done
 
 # Object-store retention is deliberately *not* done from here: a compromised or
 # buggy backup host must not be able to delete history. Set a lifecycle rule on
-# the bucket instead — docs/deploy.md has the numbers.
+# the bucket instead.
 
 log "backup complete: $STAMP ($(du -sh "$DEST" | cut -f1))"
 

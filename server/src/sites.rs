@@ -213,8 +213,10 @@ pub fn site_valid(s: &str) -> bool {
 /// the presented secret against N stored secrets, we hash it once and probe a
 /// map. SHA-256's runtime depends only on input length, and the resulting bucket
 /// index is derived from the attacker's *own* token, so it reveals nothing about
-/// any stored credential. See `docs/SECURITY.md` for why a salted KDF would be
-/// the wrong primitive (it would also make this lookup impossible).
+/// any stored credential. A salted KDF would be the wrong primitive: salting and
+/// stretching defend low-entropy passwords, while these tokens are 256 bits of
+/// CSPRNG output that no offline search recovers from a plain SHA-256. A salt
+/// would also make this single-hash lookup impossible.
 pub fn token_digest(token: &str) -> [u8; 32] {
     Sha256::digest(token.as_bytes()).into()
 }

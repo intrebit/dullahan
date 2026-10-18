@@ -48,13 +48,33 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 > **Set `ADMIN_TOKEN` on any public deploy.** Without it, `/stats/*` and blog reads are open to anyone (blog writes are refused). The server logs a warning when it's unset.
 
+## Endpoints
+
+Each site is registered once under `/sites`, and content and stats calls name it with `?site=<id>`. A token is either the global `ADMIN_TOKEN`, which covers every site, or a per-site token, which covers its own site only.
+
+| Endpoint | Who can call it | What it does |
+|---|---|---|
+| `POST /collect` | anyone | Takes a pageview or custom event and answers 202. Rate limited per IP. |
+| `GET /stats/summary`, `/timeseries`, `/top`, `/events`, `/channels`, `/realtime` | token | Reads the analytics. |
+| `GET /posts`, `GET /posts/:slug` | anyone | Lists and reads published posts. Drafts need a token. |
+| `POST /posts/:slug/view` | anyone | Counts a view. Always answers 204. |
+| `POST /posts`, `PATCH /posts/:id`, `DELETE /posts/:id` | token | Writes posts. A slug is unique within its site. |
+| `/products`, with the same routes as `/posts` | as for posts | Products, with a price in minor units (cents for EUR) and a sold-out flag. |
+| `POST /contact` | anyone | Emails the form to the site's recipient, about 5 a minute per IP. Answers 503 until email and a recipient are set up. |
+| `GET /site-config/:site` | anyone | Returns the site's config document, stored as JSON the server does not read. |
+| `PUT /site-config/:site`, `DELETE /site-config/:site` | token | Writes or removes it. |
+| `GET /site-config` | `ADMIN_TOKEN` only | Lists the sites that have a config. |
+| `/sites`, `/sites/:id`, `POST /sites/:id/token` | `ADMIN_TOKEN` only | Registers sites and issues per-site tokens, shown once. Deleting a site answers 409 while it still has content. |
+| `GET /health` | anyone | Answers `ok`. |
+| `GET /metrics` | anyone | Prometheus metrics. The Caddy config in `deploy/` answers 404 for it: do the same in any other proxy. |
+
 ## Privacy
 
 No cookies, no fingerprinting, **no raw IP storage, ever.** The surface is deliberately lean: no web vitals, no scroll depth, and no outbound-link clicks are collected, and the server never parses the User-Agent for analytics (no browser/OS/viewport columns). The server processes the client IP transiently for rate limiting; with sessions **off** (the default), `/collect` otherwise uses neither IP nor User-Agent. With sessions **on** (`SESSIONS_ENABLED=1`), the selected client IP + User-Agent are combined with a daily-rotating salt into an anonymized hash and immediately discarded (the UA is never stored); old salts are pruned on startup and periodically while the server runs, making historical hashes permanently unlinkable after retention. The event rows themselves are kept indefinitely unless you set `RETENTION_DAYS`, which sweeps `analytics_events` older than N days. Consequences embraced on purpose: a cross-day unique count is impossible, so `summary` reports **average daily visitors** rather than an inflated range-wide total, and new-vs-returning / retention / DAU-MAU are intentionally not built.
 
 ## Security
 
-Found a vulnerability? Please email hello@intrebit.com. Do not open a public issue.
+Found a vulnerability? Report it privately through [GitHub](https://github.com/intrebit/dullahan/security/advisories/new) or email hello@intrebit.com. Do not open a public issue.
 
 ## Who makes it
 
