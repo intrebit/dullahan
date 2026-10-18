@@ -60,14 +60,14 @@ if [[ -n "$RCLONE_REMOTE" ]]; then
     log "listing $RCLONE_REMOTE"
     # stderr is NOT discarded: hiding it turns "the config is unreadable" into the
     # misleading "no backups found", which sends you looking in the wrong place.
-    if ! NEWEST="$(rclone lsf --dirs-only "$RCLONE_REMOTE" | tr -d '/' | sort -r | head -1)"; then
+    if ! NEWEST="$(rclone lsf --dirs-only "$RCLONE_REMOTE" | tr -d '/' | { grep -E '^20[0-9]{6}T[0-9]{6}Z$' || true; } | sort -r | head -1)"; then
         die "could not list $RCLONE_REMOTE (see rclone's error above)"
     fi
     [[ -n "$NEWEST" ]] || die "no backups found at $RCLONE_REMOTE"
     log "restoring from remote copy $NEWEST"
     rclone copy "$RCLONE_REMOTE/$NEWEST" "$WORK" || die "could not download $NEWEST"
 else
-    NEWEST="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r | head -1)"
+    NEWEST="$(find "$BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | { grep -E '^20[0-9]{6}T[0-9]{6}Z$' || true; } | sort -r | head -1)"
     [[ -n "$NEWEST" ]] || die "no backups found in $BACKUP_DIR"
     log "no remote configured; restoring from LOCAL copy $NEWEST (this does not"
     log "prove off-box recoverability — configure RCLONE_REMOTE)"
