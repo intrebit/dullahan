@@ -121,7 +121,15 @@ jobs:
         # RUSTSEC-2023-0071: rsa Marvin attack. Pulled in only via sqlx-mysql
         # at compile time (sqlx-macros). We enable only the postgres feature,
         # so rsa code is never linked into the runtime binary.
-        run: cargo audit --ignore RUSTSEC-2023-0071
+        #
+        # RUSTSEC-2026-0381: webpki-roots bundles distrusted emSign roots. Pulled
+        # in only by sqlx 0.8 (pinned to the 0.26 line), used as the trust anchor
+        # for sqlx's TLS to Postgres. Our Postgres is local, so webpki-roots is
+        # not on the trust path and impact is negligible. The fix is in
+        # webpki-roots 1.x, reachable only by upgrading to sqlx 0.9 (breaking).
+        # Remove this ignore when we move to sqlx 0.9, or if the DB stops being
+        # local/trusted.
+        run: cargo audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0381
 
   # A credential in the tracked files fails the run, on every change and on the
   # weekly schedule. The history was scanned by hand on 16 Oct 2026 (36 commits,
