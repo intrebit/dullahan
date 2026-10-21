@@ -126,8 +126,7 @@ async fn unknown_site_is_refused(pool: PgPool) {
 
 #[sqlx::test]
 async fn site_without_recipient_is_refused(pool: PgPool) {
-    let state =
-        state_with_tenants(pool, None, Config::default(), &[Tenant::new(SITE)]).await;
+    let state = state_with_tenants(pool, None, Config::default(), &[Tenant::new(SITE)]).await;
     let app = router(state);
     let resp = app.oneshot(post_contact(valid_body(SITE))).await.unwrap();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
