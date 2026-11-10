@@ -36,7 +36,7 @@ jobs:
           install -Dm755 target/release/dullahan "dist/dullahan-${GITHUB_REF_NAME}-x86_64-linux"
 
       - name: GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: server/dist/dullahan-*
           generate_release_notes: true
