@@ -23,7 +23,7 @@ axum = { version = "0.7", features = ["json", "tokio"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.5", features = ["cors", "trace", "set-header", "timeout", "request-id", "util"] }
 tower_governor = "0.4"
-axum-prometheus = "0.7"
+axum-prometheus = "0.10"
 metrics = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
