@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -48,7 +48,7 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/dullahan_test
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -87,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # The schema is frozen as of v0.2.0: migrations are append-only from here.
       # sqlx records the SHA-384 of each migration in `_sqlx_migrations` and
       # refuses to start if it no longer matches, so editing a released migration
@@ -118,7 +118,7 @@ jobs:
     # and GitHub emails the repository's watchers.
     continue-on-error: ${{ github.event_name != 'schedule' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -154,7 +154,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: >-
           docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:v8.18.4
           detect --no-git --source /repo --redact --no-banner --exit-code 1
@@ -177,7 +177,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build image
         run: docker build -t dullahan:ci ./server
       - name: Run + smoke (/health)
@@ -220,7 +220,7 @@ jobs:
     env:
       HEALTH_URL: ${{ secrets.DEPLOY_HEALTH_URL }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
