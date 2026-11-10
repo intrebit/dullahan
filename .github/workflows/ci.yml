@@ -50,15 +50,25 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: server
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
       - name: Build
         working-directory: server
         run: cargo build --locked
-      - name: Test
+      # The tests run once, instrumented. Line coverage was 74.1% on 10 Nov 2026;
+      # the floor stops it sliding, and the summary lands on the run's page.
+      - name: Test (with coverage)
         working-directory: server
-        run: cargo test --locked
+        shell: bash
+        run: |
+          cargo llvm-cov --locked --fail-under-lines 70 --summary-only | tee coverage.txt
+          { echo '### Coverage'; echo '```'; tail -n 25 coverage.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Verify server boots and migrations apply
         working-directory: server
         env:
